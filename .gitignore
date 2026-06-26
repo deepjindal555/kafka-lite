@@ -1,0 +1,44 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+coverage.out
+
+# Go workspace
+bin/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# Benchmark outputs
+*.csv
+*.json
+
+# Runtime storage data
+data/
+
+# Temporary files
+tmp/
+temp/
+
+# Profiling
+*.prof
+cpu.prof
+mem.prof
