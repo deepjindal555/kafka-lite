@@ -2,20 +2,34 @@ package partition
 
 import (
 	"errors"
+	"fmt"
 	"kafka-lite/internal/storage"
 	"path/filepath"
-	"time"
+	"sort"
+	"sync"
 )
 
+type SegmentEntry struct {
+	log   *storage.Segment
+	index *storage.Index
+}
+
 type Partition struct {
-	segment    *storage.Segment
-	index      *storage.Index
+	directory      string
+	maxSegmentSize int64
+
+	mu sync.RWMutex
+
+	entries     []*SegmentEntry
+	activeEntry *SegmentEntry
+
 	nextOffset uint64
 }
 
-func OpenPartition(directory string) (*Partition, error) {
-	segment, err := storage.OpenSegment(
+func OpenPartition(directory string, maxSegmentSize int64) (*Partition, error) {
+	log, err := storage.OpenSegment(
 		filepath.Join(directory, "000000.log"),
+		0,
 	)
 	if err != nil {
 		return nil, err
@@ -23,31 +37,51 @@ func OpenPartition(directory string) (*Partition, error) {
 
 	index, err := storage.OpenIndex(
 		filepath.Join(directory, "000000.index"),
+		0,
 	)
 	if err != nil {
-		_ = segment.Close()
+		_ = log.Close()
 		return nil, err
 	}
 
+	entry := &SegmentEntry{
+		log:   log,
+		index: index,
+	}
+
 	return &Partition{
-		segment:    segment,
-		index:      index,
+		directory:      directory,
+		maxSegmentSize: maxSegmentSize,
+
+		entries:     []*SegmentEntry{entry},
+		activeEntry: entry,
+
 		nextOffset: 0,
 	}, nil
 }
 
 func (partition *Partition) Append(payload []byte) (uint64, error) {
-	record := &storage.Record{
-		Timestamp: time.Now().UnixNano(),
-		Payload:   payload,
-	}
+	partition.mu.Lock()
+	defer partition.mu.Unlock()
 
-	position, err := partition.segment.Append(record)
+	size, err := partition.activeEntry.log.Size()
 	if err != nil {
 		return 0, err
 	}
 
-	err = partition.index.Write(
+	if !partition.activeEntry.log.CanAppend(payload, partition.maxSegmentSize-size) {
+		err = partition.rotate()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	position, err := partition.activeEntry.log.Append(payload)
+	if err != nil {
+		return 0, err
+	}
+
+	err = partition.activeEntry.index.Write(
 		partition.nextOffset,
 		position,
 	)
@@ -62,21 +96,92 @@ func (partition *Partition) Append(payload []byte) (uint64, error) {
 }
 
 func (partition *Partition) Read(offset uint64) ([]byte, error) {
-	position, err := partition.index.Lookup(offset)
+	partition.mu.RLock()
+	defer partition.mu.RUnlock()
+
+	entry, err := partition.findSegmentEntry(offset)
 	if err != nil {
 		return nil, err
 	}
 
-	record, err := partition.segment.ReadAt(position)
+	position, err := entry.index.Lookup(offset)
 	if err != nil {
 		return nil, err
 	}
-	return record.Payload, nil
+
+	return entry.log.ReadAt(position)
+}
+
+func (partition *Partition) findSegmentEntry(offset uint64) (*SegmentEntry, error) {
+	index := sort.Search(
+		len(partition.entries),
+		func(i int) bool {
+			return partition.entries[i].log.BaseOffset > offset
+		},
+	)
+
+	if index == 0 {
+		return nil, storage.ErrOffsetNotFound
+	}
+
+	index--
+
+	return partition.entries[index], nil
+}
+
+func (partition *Partition) rotate() error {
+	baseOffset := partition.nextOffset
+
+	log, err := storage.OpenSegment(
+		filepath.Join(
+			partition.directory,
+			fmt.Sprintf("%06d.log", baseOffset),
+		),
+		baseOffset,
+	)
+	if err != nil {
+		return err
+	}
+
+	index, err := storage.OpenIndex(
+		filepath.Join(
+			partition.directory,
+			fmt.Sprintf("%06d.index", baseOffset),
+		),
+		baseOffset,
+	)
+	if err != nil {
+		_ = log.Close()
+		return err
+	}
+
+	entry := &SegmentEntry{
+		log:   log,
+		index: index,
+	}
+
+	partition.entries = append(partition.entries, entry)
+	partition.activeEntry = entry
+
+	return nil
+}
+
+func (entry *SegmentEntry) Close() error {
+	return errors.Join(
+		entry.log.Close(),
+		entry.index.Close(),
+	)
 }
 
 func (partition *Partition) Close() error {
-	return errors.Join(
-		partition.segment.Close(),
-		partition.index.Close(),
-	)
+	partition.mu.Lock()
+	defer partition.mu.Unlock()
+
+	errs := make([]error, 0, len(partition.entries))
+
+	for _, entry := range partition.entries {
+		errs = append(errs, entry.Close())
+	}
+
+	return errors.Join(errs...)
 }

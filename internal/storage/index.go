@@ -18,10 +18,11 @@ const (
 )
 
 type Index struct {
-	file *os.File
+	BaseOffset uint64
+	file       *os.File
 }
 
-func OpenIndex(path string) (*Index, error) {
+func OpenIndex(path string, baseOffset uint64) (*Index, error) {
 	file, err := os.OpenFile(
 		path,
 		os.O_CREATE|os.O_RDWR,
@@ -32,7 +33,8 @@ func OpenIndex(path string) (*Index, error) {
 	}
 
 	return &Index{
-		file: file,
+		BaseOffset: baseOffset,
+		file:       file,
 	}, nil
 }
 
@@ -49,9 +51,10 @@ func (index *Index) Write(offset uint64, position int64) error {
 		uint64(position),
 	)
 
+	relativeOffset := offset - index.BaseOffset
 	n, err := index.file.WriteAt(
 		entry,
-		int64(offset)*IndexEntrySize,
+		int64(relativeOffset)*IndexEntrySize,
 	)
 	if err != nil {
 		return err
@@ -67,9 +70,10 @@ func (index *Index) Write(offset uint64, position int64) error {
 func (index *Index) Lookup(offset uint64) (int64, error) {
 	entry := make([]byte, IndexEntrySize)
 
+	relativeOffset := offset - index.BaseOffset
 	n, err := index.file.ReadAt(
 		entry,
-		int64(offset)*IndexEntrySize,
+		int64(relativeOffset)*IndexEntrySize,
 	)
 
 	if err != nil {

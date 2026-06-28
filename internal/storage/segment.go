@@ -4,13 +4,15 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"time"
 )
 
 type Segment struct {
-	file *os.File
+	BaseOffset uint64
+	file       *os.File
 }
 
-func OpenSegment(path string) (*Segment, error) {
+func OpenSegment(path string, baseOffset uint64) (*Segment, error) {
 	file, err := os.OpenFile(
 		path,
 		os.O_CREATE|os.O_RDWR,
@@ -21,14 +23,24 @@ func OpenSegment(path string) (*Segment, error) {
 	}
 
 	return &Segment{
-		file: file,
+		BaseOffset: baseOffset,
+		file:       file,
 	}, nil
 }
 
-func (segment *Segment) Append(record *Record) (int64, error) {
+func (segment *Segment) CanAppend(payload []byte, availableSpace int64) bool {
+	return int64(RecordHeaderSize+len(payload)) <= availableSpace
+}
+
+func (segment *Segment) Append(payload []byte) (int64, error) {
 	position, err := segment.file.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
+	}
+
+	record := &Record{
+		Timestamp: time.Now().UnixNano(),
+		Payload:   payload,
 	}
 
 	data := EncodeRecord(record)
@@ -44,7 +56,16 @@ func (segment *Segment) Append(record *Record) (int64, error) {
 	return position, nil
 }
 
-func (segment *Segment) ReadAt(position int64) (*Record, error) {
+func (segment *Segment) ReadAt(position int64) ([]byte, error) {
+	record, err := segment.readRecordAt(position)
+	if err != nil {
+		return nil, err
+	}
+
+	return record.Payload, nil
+}
+
+func (segment *Segment) readRecordAt(position int64) (*Record, error) {
 	header := make([]byte, RecordHeaderSize)
 
 	n, err := segment.file.ReadAt(header, position)
