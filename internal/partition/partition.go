@@ -4,12 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"kafka-lite/internal/storage"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 )
 
-type SegmentEntry struct {
+type segmentEntry struct {
 	log   *storage.Segment
 	index *storage.Index
 }
@@ -20,13 +21,17 @@ type Partition struct {
 
 	mu sync.RWMutex
 
-	entries     []*SegmentEntry
-	activeEntry *SegmentEntry
+	entries     []*segmentEntry
+	activeEntry *segmentEntry
 
 	nextOffset uint64
 }
 
 func OpenPartition(directory string, maxSegmentSize int64) (*Partition, error) {
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return nil, err
+	}
+
 	log, err := storage.OpenSegment(
 		filepath.Join(directory, "000000.log"),
 		0,
@@ -44,7 +49,7 @@ func OpenPartition(directory string, maxSegmentSize int64) (*Partition, error) {
 		return nil, err
 	}
 
-	entry := &SegmentEntry{
+	entry := &segmentEntry{
 		log:   log,
 		index: index,
 	}
@@ -53,7 +58,7 @@ func OpenPartition(directory string, maxSegmentSize int64) (*Partition, error) {
 		directory:      directory,
 		maxSegmentSize: maxSegmentSize,
 
-		entries:     []*SegmentEntry{entry},
+		entries:     []*segmentEntry{entry},
 		activeEntry: entry,
 
 		nextOffset: 0,
@@ -112,7 +117,7 @@ func (partition *Partition) Read(offset uint64) ([]byte, error) {
 	return entry.log.ReadAt(position)
 }
 
-func (partition *Partition) findSegmentEntry(offset uint64) (*SegmentEntry, error) {
+func (partition *Partition) findSegmentEntry(offset uint64) (*segmentEntry, error) {
 	index := sort.Search(
 		len(partition.entries),
 		func(i int) bool {
@@ -155,7 +160,7 @@ func (partition *Partition) rotate() error {
 		return err
 	}
 
-	entry := &SegmentEntry{
+	entry := &segmentEntry{
 		log:   log,
 		index: index,
 	}
@@ -166,7 +171,7 @@ func (partition *Partition) rotate() error {
 	return nil
 }
 
-func (entry *SegmentEntry) Close() error {
+func (entry *segmentEntry) Close() error {
 	return errors.Join(
 		entry.log.Close(),
 		entry.index.Close(),

@@ -8,6 +8,8 @@ var (
 	ErrInvalidVersion = errors.New("invalid protocol version")
 	ErrInvalidTopic   = errors.New("invalid topic")
 
+	ErrInvalidClientInstance = errors.New("invalid client instance")
+
 	ErrUnknownRequestType  = errors.New("unknown request type")
 	ErrUnknownResponseType = errors.New("unknown response type")
 
