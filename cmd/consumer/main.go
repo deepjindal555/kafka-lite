@@ -21,30 +21,69 @@ func main() {
 	}
 	defer logger.Close()
 
-	connection, err := net.Dial("tcp", address)
-	if err != nil {
-		logger.Fatal(
-			"broker_connection_failed",
+	var nextOffset uint64
+	for {
+		connection := connect()
+
+		err := consumerLoop(connection, &nextOffset)
+
+		_ = connection.Close()
+
+		logger.Warn(
+			"broker_disconnected",
 			logger.Str("address", address),
 			logger.Err(err),
 		)
+
+		time.Sleep(retryTimeout)
 	}
-	defer connection.Close()
+}
 
-	logger.Info(
-		"broker_connected",
-		logger.Str("address", address),
-		logger.Str("instance", logger.Instance()),
-	)
+func connect() net.Conn {
+	var reconnect bool
 
-	var nextOffset uint64
+	for {
+		connection, err := net.Dial("tcp", address)
+		if err == nil {
+			if reconnect {
+				logger.Info(
+					"broker_connected",
+					logger.Str("address", address),
+					logger.Bool("reconnect", true),
+				)
+			} else {
+				logger.Info(
+					"broker_connected",
+					logger.Str("address", address),
+					logger.Bool("reconnect", false),
+					logger.Str("instance", logger.Instance()),
+				)
+			}
 
+			return connection
+		}
+
+		if !reconnect {
+			logger.Warn(
+				"broker_connection_failed",
+				logger.Str("address", address),
+				logger.Err(err),
+			)
+
+			reconnect = true
+		}
+
+		time.Sleep(retryTimeout)
+	}
+}
+
+func consumerLoop(connection net.Conn, nextOffset *uint64) error {
 	for {
 		request := &protocol.Request{
 			Type:           protocol.RequestFetch,
 			ClientInstance: logger.Instance(),
 			Topic:          topic,
-			Offset:         nextOffset,
+			Offset:         *nextOffset,
 		}
 
 		frame, err := protocol.EncodeRequest(request)
@@ -56,18 +95,12 @@ func main() {
 		}
 
 		if err = protocol.WriteFrame(connection, frame); err != nil {
-			logger.Fatal(
-				"request_send_failed",
-				logger.Err(err),
-			)
+			return err
 		}
 
 		frame, err = protocol.ReadFrame(connection)
 		if err != nil {
-			logger.Fatal(
-				"response_read_failed",
-				logger.Err(err),
-			)
+			return err
 		}
 
 		response, err := protocol.DecodeResponse(frame)
@@ -82,12 +115,12 @@ func main() {
 		case protocol.StatusOK:
 			logger.Info(
 				"message_fetched",
-				logger.Uint64("offset", nextOffset),
+				logger.Uint64("offset", *nextOffset),
 				logger.Int("size", len(response.Payload)),
 			)
 
-			fmt.Printf("[%d] %s\n", nextOffset, string(response.Payload))
-			nextOffset++
+			fmt.Printf("[%d] %s\n", *nextOffset, string(response.Payload))
+			(*nextOffset)++
 
 		case protocol.StatusOffsetNotFound:
 			time.Sleep(retryTimeout)

@@ -32,37 +32,7 @@ func OpenPartition(directory string, maxSegmentSize int64) (*Partition, error) {
 		return nil, err
 	}
 
-	log, err := storage.OpenSegment(
-		filepath.Join(directory, "000000.log"),
-		0,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	index, err := storage.OpenIndex(
-		filepath.Join(directory, "000000.index"),
-		0,
-	)
-	if err != nil {
-		_ = log.Close()
-		return nil, err
-	}
-
-	entry := &segmentEntry{
-		log:   log,
-		index: index,
-	}
-
-	return &Partition{
-		directory:      directory,
-		maxSegmentSize: maxSegmentSize,
-
-		entries:     []*segmentEntry{entry},
-		activeEntry: entry,
-
-		nextOffset: 0,
-	}, nil
+	return recoverPartition(directory, maxSegmentSize)
 }
 
 func (partition *Partition) Append(payload []byte) (uint64, error) {
@@ -86,11 +56,7 @@ func (partition *Partition) Append(payload []byte) (uint64, error) {
 		return 0, err
 	}
 
-	err = partition.activeEntry.index.Write(
-		partition.nextOffset,
-		position,
-	)
-	if err != nil {
+	if err := partition.activeEntry.index.Write(partition.nextOffset, position); err != nil {
 		return 0, err
 	}
 

@@ -6,14 +6,16 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"kafka-lite/internal/logger"
 	"kafka-lite/internal/protocol"
 )
 
 const (
-	address = "localhost:9092"
-	topic   = "default"
+	address      = "localhost:9092"
+	topic        = "default"
+	retryTimeout = 100 * time.Millisecond
 )
 
 func main() {
@@ -22,24 +24,64 @@ func main() {
 	}
 	defer logger.Close()
 
-	connection, err := net.Dial("tcp", address)
-	if err != nil {
-		logger.Fatal(
-			"broker_connection_failed",
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		connection := connect()
+
+		err := producerLoop(connection, reader)
+
+		_ = connection.Close()
+
+		logger.Warn(
+			"broker_disconnected",
 			logger.Str("address", address),
 			logger.Err(err),
 		)
+
+		time.Sleep(retryTimeout)
 	}
-	defer connection.Close()
+}
 
-	logger.Info(
-		"broker_connected",
-		logger.Str("address", address),
-		logger.Str("instance", logger.Instance()),
-	)
+func connect() net.Conn {
+	var reconnect bool
 
-	reader := bufio.NewReader(os.Stdin)
+	for {
+		connection, err := net.Dial("tcp", address)
+		if err == nil {
+			if reconnect {
+				logger.Info(
+					"broker_connected",
+					logger.Str("address", address),
+					logger.Bool("reconnect", true),
+				)
+			} else {
+				logger.Info(
+					"broker_connected",
+					logger.Str("address", address),
+					logger.Bool("reconnect", false),
+					logger.Str("instance", logger.Instance()),
+				)
+			}
 
+			return connection
+		}
+
+		if !reconnect {
+			logger.Warn(
+				"broker_connection_failed",
+				logger.Str("address", address),
+				logger.Err(err),
+			)
+
+			reconnect = true
+		}
+
+		time.Sleep(retryTimeout)
+	}
+}
+
+func producerLoop(connection net.Conn, reader *bufio.Reader) error {
 	for {
 		fmt.Print("> ")
 
@@ -69,18 +111,12 @@ func main() {
 		}
 
 		if err = protocol.WriteFrame(connection, frame); err != nil {
-			logger.Fatal(
-				"request_send_failed",
-				logger.Err(err),
-			)
+			return err
 		}
 
 		frame, err = protocol.ReadFrame(connection)
 		if err != nil {
-			logger.Fatal(
-				"response_read_failed",
-				logger.Err(err),
-			)
+			return err
 		}
 
 		response, err := protocol.DecodeResponse(frame)
