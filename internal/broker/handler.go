@@ -4,12 +4,13 @@ import (
 	"errors"
 
 	"kafka-lite/internal/logger"
+	"kafka-lite/internal/partition"
 	"kafka-lite/internal/protocol"
 	"kafka-lite/internal/storage"
 )
 
 func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Response, error) {
-	topic, ok := broker.getTopic(request.Topic)
+	topic, ok := broker.getTopic(request.Produce.Topic)
 	if !ok {
 		return &protocol.Response{
 			Type:       protocol.ResponseProduce,
@@ -20,12 +21,12 @@ func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Respon
 
 	partition := topic.Partitions[0]
 
-	offset, err := partition.Append(request.Payload)
+	offset, err := partition.AppendBatch(request.Produce.Batch)
 	if err != nil {
 		logger.Error(
 			"message_produce_failed",
 			logger.Str("client", request.ClientInstance),
-			logger.Str("topic", request.Topic),
+			logger.Str("topic", request.Produce.Topic),
 			logger.Err(err),
 		)
 
@@ -39,9 +40,10 @@ func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Respon
 	logger.Info(
 		"message_produced",
 		logger.Str("client", request.ClientInstance),
-		logger.Str("topic", request.Topic),
-		logger.Uint64("offset", offset),
-		logger.Int("size", len(request.Payload)),
+		logger.Str("topic", request.Produce.Topic),
+		logger.Uint64("base_offset", offset),
+		logger.Uint32("record_count", request.Produce.Batch.RecordCount),
+		logger.Int("records_size", len(request.Produce.Batch.EncodedRecords)),
 	)
 
 	payload := make([]byte, protocol.OffsetFieldSize)
@@ -55,7 +57,7 @@ func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Respon
 }
 
 func (broker *Broker) handleFetch(request *protocol.Request) (*protocol.Response, error) {
-	topic, ok := broker.getTopic(request.Topic)
+	topic, ok := broker.getTopic(request.Fetch.Topic)
 	if !ok {
 		return &protocol.Response{
 			Type:       protocol.ResponseFetch,
@@ -66,7 +68,7 @@ func (broker *Broker) handleFetch(request *protocol.Request) (*protocol.Response
 
 	partition := topic.Partitions[0]
 
-	payload, err := partition.Read(request.Offset)
+	payload, err := partition.Read(request.Fetch.Offset)
 	if err != nil {
 		statusCode := mapStatusCode(err)
 
@@ -74,8 +76,8 @@ func (broker *Broker) handleFetch(request *protocol.Request) (*protocol.Response
 			logger.Error(
 				"message_fetch_failed",
 				logger.Str("client", request.ClientInstance),
-				logger.Str("topic", request.Topic),
-				logger.Uint64("offset", request.Offset),
+				logger.Str("topic", request.Fetch.Topic),
+				logger.Uint64("offset", request.Fetch.Offset),
 				logger.Err(err),
 			)
 		}
@@ -90,8 +92,8 @@ func (broker *Broker) handleFetch(request *protocol.Request) (*protocol.Response
 	logger.Info(
 		"message_fetched",
 		logger.Str("client", request.ClientInstance),
-		logger.Str("topic", request.Topic),
-		logger.Uint64("offset", request.Offset),
+		logger.Str("topic", request.Fetch.Topic),
+		logger.Uint64("offset", request.Fetch.Offset),
 		logger.Int("size", len(payload)),
 	)
 
@@ -106,6 +108,9 @@ func mapStatusCode(err error) protocol.StatusCode {
 	switch {
 	case errors.Is(err, storage.ErrOffsetNotFound):
 		return protocol.StatusOffsetNotFound
+
+	case errors.Is(err, partition.ErrBatchTooLarge):
+		return protocol.StatusBatchTooLarge
 
 	default:
 		return protocol.StatusInternalError

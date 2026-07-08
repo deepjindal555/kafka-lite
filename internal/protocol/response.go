@@ -21,6 +21,7 @@ type StatusCode uint8
 const (
 	StatusOK StatusCode = iota
 	StatusOffsetNotFound
+	StatusBatchTooLarge
 	StatusInternalError
 	StatusTopicNotFound
 )

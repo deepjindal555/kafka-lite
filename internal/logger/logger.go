@@ -64,13 +64,6 @@ var (
 	initialized bool
 )
 
-func Instance() string {
-	mu.Lock()
-	defer mu.Unlock()
-
-	return instance
-}
-
 func Init(name string, logLevel Level) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -123,6 +116,66 @@ func Close() error {
 	initialized = false
 
 	return err
+}
+
+func Instance() string {
+	mu.Lock()
+	defer mu.Unlock()
+
+	return instance
+}
+
+func Debug(event string, fields ...Field) {
+	logEntry(LevelDebug, event, fields...)
+}
+
+func Info(event string, fields ...Field) {
+	logEntry(LevelInfo, event, fields...)
+}
+
+func Warn(event string, fields ...Field) {
+	logEntry(LevelWarn, event, fields...)
+}
+
+func Error(event string, fields ...Field) {
+	logEntry(LevelError, event, fields...)
+}
+
+func Fatal(event string, fields ...Field) {
+	logEntry(LevelFatal, event, fields...)
+}
+
+func logEntry(logLevel Level, event string, fields ...Field) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !initialized || !enabled(logLevel) {
+		return
+	}
+
+	entry := &Entry{
+		Timestamp: time.Now().UTC(),
+		Level:     logLevel,
+		Component: component,
+		Event:     event,
+	}
+
+	if len(fields) > 0 {
+		entry.Fields = make(map[string]any, len(fields))
+		for _, field := range fields {
+			if _, exists := entry.Fields[field.Key]; exists {
+				panic("duplicate logger field: " + field.Key)
+			}
+			entry.Fields[field.Key] = field.Value
+		}
+	}
+
+	write(entry)
+
+	if logLevel == LevelFatal {
+		_ = file.Close()
+		os.Exit(1)
+	}
 }
 
 func enabled(logLevel Level) bool {
@@ -195,59 +248,6 @@ func writeFile(entry *Entry) {
 	}
 }
 
-func logEntry(logLevel Level, event string, fields ...Field) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if !initialized || !enabled(logLevel) {
-		return
-	}
-
-	entry := &Entry{
-		Timestamp: time.Now().UTC(),
-		Level:     logLevel,
-		Component: component,
-		Event:     event,
-	}
-
-	if len(fields) > 0 {
-		entry.Fields = make(map[string]any, len(fields))
-		for _, field := range fields {
-			if _, exists := entry.Fields[field.Key]; exists {
-				panic("duplicate logger field: " + field.Key)
-			}
-			entry.Fields[field.Key] = field.Value
-		}
-	}
-
-	write(entry)
-
-	if logLevel == LevelFatal {
-		_ = file.Close()
-		os.Exit(1)
-	}
-}
-
-func Debug(event string, fields ...Field) {
-	logEntry(LevelDebug, event, fields...)
-}
-
-func Info(event string, fields ...Field) {
-	logEntry(LevelInfo, event, fields...)
-}
-
-func Warn(event string, fields ...Field) {
-	logEntry(LevelWarn, event, fields...)
-}
-
-func Error(event string, fields ...Field) {
-	logEntry(LevelError, event, fields...)
-}
-
-func Fatal(event string, fields ...Field) {
-	logEntry(LevelFatal, event, fields...)
-}
-
 func Str(key, value string) Field {
 	return Field{
 		Key:   key,
@@ -256,6 +256,13 @@ func Str(key, value string) Field {
 }
 
 func Int(key string, value int) Field {
+	return Field{
+		Key:   key,
+		Value: value,
+	}
+}
+
+func Uint32(key string, value uint32) Field {
 	return Field{
 		Key:   key,
 		Value: value,

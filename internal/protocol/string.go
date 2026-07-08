@@ -42,6 +42,9 @@ func (status StatusCode) String() string {
 	case StatusOffsetNotFound:
 		return "OffsetNotFound"
 
+	case StatusBatchTooLarge:
+		return "BatchTooLarge"
+
 	case StatusInternalError:
 		return "InternalError"
 

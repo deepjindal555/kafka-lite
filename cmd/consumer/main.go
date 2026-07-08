@@ -82,8 +82,10 @@ func consumerLoop(connection net.Conn, nextOffset *uint64) error {
 		request := &protocol.Request{
 			Type:           protocol.RequestFetch,
 			ClientInstance: logger.Instance(),
-			Topic:          topic,
-			Offset:         *nextOffset,
+			Fetch: &protocol.FetchRequest{
+				Topic:  topic,
+				Offset: *nextOffset,
+			},
 		}
 
 		frame, err := protocol.EncodeRequest(request)

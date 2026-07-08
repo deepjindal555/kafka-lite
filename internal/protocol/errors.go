@@ -13,6 +13,9 @@ var (
 	ErrUnknownRequestType  = errors.New("unknown request type")
 	ErrUnknownResponseType = errors.New("unknown response type")
 
+	ErrNilProduceRequest = errors.New("nil produce request")
+	ErrNilFetchRequest   = errors.New("nil fetch request")
+
 	ErrInvalidProduceRequest = errors.New("invalid produce request")
 	ErrInvalidFetchRequest   = errors.New("invalid fetch request")
 

@@ -1,10 +1,10 @@
 package storage
 
 import (
-	"encoding/binary"
 	"io"
 	"os"
-	"time"
+
+	"kafka-lite/internal/batch"
 )
 
 type Segment struct {
@@ -28,36 +28,42 @@ func OpenSegment(path string, baseOffset uint64) (*Segment, error) {
 	}, nil
 }
 
-func (segment *Segment) CanAppend(payload []byte, availableSpace int64) bool {
-	return int64(RecordHeaderSize+len(payload)) <= availableSpace
+func (segment *Segment) CanAppend(batchSize int, availableSpace int64) bool {
+	return int64(batchSize) <= availableSpace
 }
 
-func (segment *Segment) Append(payload []byte) (int64, error) {
-	position, err := segment.file.Seek(0, io.SeekEnd)
+func (segment *Segment) AppendBatch(recordBatch *batch.RecordBatch) ([]int64, error) {
+	batchPosition, err := segment.file.Seek(0, io.SeekEnd)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	record := &Record{
-		Timestamp: time.Now().UnixNano(),
-		Payload:   payload,
+	positions, err := batch.RecordPositions(
+		recordBatch.EncodedRecords,
+		batchPosition,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	data := EncodeRecord(record)
+	data, err := batch.EncodeBatch(recordBatch)
+	if err != nil {
+		return nil, err
+	}
 
 	n, err := segment.file.Write(data)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if n != len(data) {
-		return 0, io.ErrShortWrite
+		return nil, io.ErrShortWrite
 	}
 
-	return position, nil
+	return positions, nil
 }
 
-func (segment *Segment) ReadAt(position int64) ([]byte, error) {
-	record, err := segment.readRecordAt(position)
+func (segment *Segment) ReadAt(batchPosition int64) ([]byte, error) {
+	record, err := segment.readRecordAt(batchPosition)
 	if err != nil {
 		return nil, err
 	}
@@ -65,23 +71,20 @@ func (segment *Segment) ReadAt(position int64) ([]byte, error) {
 	return record.Payload, nil
 }
 
-func (segment *Segment) readRecordAt(position int64) (*Record, error) {
-	header := make([]byte, RecordHeaderSize)
+func (segment *Segment) readRecordAt(batchPosition int64) (*batch.Record, error) {
+	header := make([]byte, batch.RecordHeaderSize)
 
-	n, err := segment.file.ReadAt(header, position)
+	n, err := segment.file.ReadAt(header, batchPosition)
 	if err != nil {
 		return nil, err
 	}
-	if n != RecordHeaderSize {
+	if n != batch.RecordHeaderSize {
 		return nil, io.ErrUnexpectedEOF
 	}
 
-	recordSize := binary.BigEndian.Uint32(
-		header[SizeOffset:CRCOffset],
-	)
-
-	if recordSize < RecordHeaderSize {
-		return nil, ErrInvalidSize
+	recordSize, err := batch.DecodeRecordSize(header)
+	if err != nil {
+		return nil, err
 	}
 
 	size, err := segment.Size()
@@ -89,13 +92,13 @@ func (segment *Segment) readRecordAt(position int64) (*Record, error) {
 		return nil, err
 	}
 
-	if position+int64(recordSize) > size {
+	if batchPosition+int64(recordSize) > size {
 		return nil, io.ErrUnexpectedEOF
 	}
 
 	data := make([]byte, int(recordSize))
 
-	n, err = segment.file.ReadAt(data, position)
+	n, err = segment.file.ReadAt(data, batchPosition)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +106,7 @@ func (segment *Segment) readRecordAt(position int64) (*Record, error) {
 		return nil, io.ErrUnexpectedEOF
 	}
 
-	return DecodeRecord(data)
+	return batch.DecodeRecord(data)
 }
 
 func (segment *Segment) Size() (int64, error) {

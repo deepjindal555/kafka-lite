@@ -3,6 +3,7 @@ package partition
 import (
 	"errors"
 	"fmt"
+	"kafka-lite/internal/batch"
 	"kafka-lite/internal/storage"
 	"os"
 	"path/filepath"
@@ -35,35 +36,47 @@ func OpenPartition(directory string, maxSegmentSize int64) (*Partition, error) {
 	return recoverPartition(directory, maxSegmentSize)
 }
 
-func (partition *Partition) Append(payload []byte) (uint64, error) {
+func (partition *Partition) AppendBatch(recordBatch *batch.RecordBatch) (uint64, error) {
 	partition.mu.Lock()
 	defer partition.mu.Unlock()
+
+	baseOffset := partition.nextOffset
+	recordBatch.BaseOffset = baseOffset
+
+	batchSize, err := batch.EncodedBatchSize(recordBatch)
+	if err != nil {
+		return 0, err
+	}
+
+	if int64(batchSize) > partition.maxSegmentSize {
+		return 0, ErrBatchTooLarge
+	}
 
 	size, err := partition.activeEntry.log.Size()
 	if err != nil {
 		return 0, err
 	}
 
-	if !partition.activeEntry.log.CanAppend(payload, partition.maxSegmentSize-size) {
-		err = partition.rotate()
-		if err != nil {
+	if !partition.activeEntry.log.CanAppend(batchSize, partition.maxSegmentSize-size) {
+		if err := partition.rotate(); err != nil {
 			return 0, err
 		}
 	}
 
-	position, err := partition.activeEntry.log.Append(payload)
+	positions, err := partition.activeEntry.log.AppendBatch(recordBatch)
 	if err != nil {
 		return 0, err
 	}
 
-	if err := partition.activeEntry.index.Write(partition.nextOffset, position); err != nil {
-		return 0, err
+	for i, position := range positions {
+		if err := partition.activeEntry.index.Write(baseOffset+uint64(i), position); err != nil {
+			return 0, err
+		}
 	}
 
-	offset := partition.nextOffset
-	partition.nextOffset++
+	partition.nextOffset += uint64(recordBatch.RecordCount)
 
-	return offset, nil
+	return baseOffset, nil
 }
 
 func (partition *Partition) Read(offset uint64) ([]byte, error) {
@@ -81,6 +94,19 @@ func (partition *Partition) Read(offset uint64) ([]byte, error) {
 	}
 
 	return entry.log.ReadAt(position)
+}
+
+func (partition *Partition) Close() error {
+	partition.mu.Lock()
+	defer partition.mu.Unlock()
+
+	errs := make([]error, 0, len(partition.entries))
+
+	for _, entry := range partition.entries {
+		errs = append(errs, entry.Close())
+	}
+
+	return errors.Join(errs...)
 }
 
 func (partition *Partition) findSegmentEntry(offset uint64) (*segmentEntry, error) {
@@ -142,17 +168,4 @@ func (entry *segmentEntry) Close() error {
 		entry.log.Close(),
 		entry.index.Close(),
 	)
-}
-
-func (partition *Partition) Close() error {
-	partition.mu.Lock()
-	defer partition.mu.Unlock()
-
-	errs := make([]error, 0, len(partition.entries))
-
-	for _, entry := range partition.entries {
-		errs = append(errs, entry.Close())
-	}
-
-	return errors.Join(errs...)
 }

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/binary"
+	"kafka-lite/internal/batch"
 	"math"
 )
 
@@ -22,13 +23,22 @@ const (
 	RequestFetch
 )
 
+type ProduceRequest struct {
+	Topic string
+	Batch *batch.RecordBatch
+}
+
+type FetchRequest struct {
+	Topic  string
+	Offset uint64
+}
+
 type Request struct {
 	Type           RequestType
 	ClientInstance string
 
-	Topic   string
-	Payload []byte
-	Offset  uint64
+	Produce *ProduceRequest
+	Fetch   *FetchRequest
 }
 
 func EncodeRequest(request *Request) ([]byte, error) {
@@ -76,16 +86,25 @@ func DecodeRequest(data []byte) (*Request, error) {
 }
 
 func encodeProduceRequest(request *Request) ([]byte, error) {
+	if request.Produce == nil {
+		return nil, ErrNilProduceRequest
+	}
+
 	if len(request.ClientInstance) > math.MaxUint16 {
 		return nil, ErrInvalidClientInstance
 	}
 
-	if len(request.Topic) == 0 || len(request.Topic) > math.MaxUint16 {
+	if len(request.Produce.Topic) == 0 || len(request.Produce.Topic) > math.MaxUint16 {
 		return nil, ErrInvalidTopic
 	}
 
+	batchData, err := batch.EncodeBatch(request.Produce.Batch)
+	if err != nil {
+		return nil, err
+	}
+
 	clientInstanceLength := len(request.ClientInstance)
-	topicLength := len(request.Topic)
+	topicLength := len(request.Produce.Topic)
 
 	frameLength :=
 		FrameHeaderSize +
@@ -93,11 +112,15 @@ func encodeProduceRequest(request *Request) ([]byte, error) {
 			clientInstanceLength +
 			TopicLengthFieldSize +
 			topicLength +
-			len(request.Payload)
+			len(batchData)
 
 	data := make([]byte, frameLength)
 
-	binary.BigEndian.PutUint32(data[LengthOffset:VersionOffset], uint32(frameLength))
+	binary.BigEndian.PutUint32(
+		data[LengthOffset:VersionOffset],
+		uint32(frameLength),
+	)
+
 	data[VersionOffset] = ProtocolVersion
 	data[TypeOffset] = byte(RequestProduce)
 
@@ -117,8 +140,8 @@ func encodeProduceRequest(request *Request) ([]byte, error) {
 	payloadOffset := topicOffset + topicLength
 
 	copy(data[ClientInstanceOffset:topicLengthOffset], request.ClientInstance)
-	copy(data[topicOffset:payloadOffset], request.Topic)
-	copy(data[payloadOffset:], request.Payload)
+	copy(data[topicOffset:payloadOffset], request.Produce.Topic)
+	copy(data[payloadOffset:], batchData)
 
 	return data, nil
 }
@@ -143,36 +166,43 @@ func decodeProduceRequest(data []byte) (*Request, error) {
 	)
 
 	topicOffset := topicLengthOffset + TopicLengthFieldSize
-	payloadOffset := topicOffset + int(topicLength)
+	batchOffset := topicOffset + int(topicLength)
 
-	if len(data) < payloadOffset {
+	if len(data) < batchOffset {
 		return nil, ErrInvalidProduceRequest
 	}
 
-	payload := make([]byte, len(data)-payloadOffset)
-	copy(payload, data[payloadOffset:])
+	recordBatch, err := batch.DecodeBatch(data[batchOffset:])
+	if err != nil {
+		return nil, err
+	}
 
 	return &Request{
-		Type: RequestProduce,
-
+		Type:           RequestProduce,
 		ClientInstance: string(data[ClientInstanceOffset:topicLengthOffset]),
 
-		Topic:   string(data[topicOffset:payloadOffset]),
-		Payload: payload,
+		Produce: &ProduceRequest{
+			Topic: string(data[topicOffset:batchOffset]),
+			Batch: recordBatch,
+		},
 	}, nil
 }
 
 func encodeFetchRequest(request *Request) ([]byte, error) {
+	if request.Fetch == nil {
+		return nil, ErrNilFetchRequest
+	}
+
 	if len(request.ClientInstance) > math.MaxUint16 {
 		return nil, ErrInvalidClientInstance
 	}
 
-	if len(request.Topic) == 0 || len(request.Topic) > math.MaxUint16 {
+	if len(request.Fetch.Topic) == 0 || len(request.Fetch.Topic) > math.MaxUint16 {
 		return nil, ErrInvalidTopic
 	}
 
 	clientInstanceLength := len(request.ClientInstance)
-	topicLength := len(request.Topic)
+	topicLength := len(request.Fetch.Topic)
 
 	frameLength :=
 		FrameHeaderSize +
@@ -184,7 +214,11 @@ func encodeFetchRequest(request *Request) ([]byte, error) {
 
 	data := make([]byte, frameLength)
 
-	binary.BigEndian.PutUint32(data[LengthOffset:VersionOffset], uint32(frameLength))
+	binary.BigEndian.PutUint32(
+		data[LengthOffset:VersionOffset],
+		uint32(frameLength),
+	)
+
 	data[VersionOffset] = ProtocolVersion
 	data[TypeOffset] = byte(RequestFetch)
 
@@ -204,8 +238,8 @@ func encodeFetchRequest(request *Request) ([]byte, error) {
 	offsetOffset := topicOffset + topicLength
 
 	copy(data[ClientInstanceOffset:topicLengthOffset], request.ClientInstance)
-	copy(data[topicOffset:offsetOffset], request.Topic)
-	PutOffset(data[offsetOffset:], request.Offset)
+	copy(data[topicOffset:offsetOffset], request.Fetch.Topic)
+	PutOffset(data[offsetOffset:], request.Fetch.Offset)
 
 	return data, nil
 }
@@ -236,13 +270,14 @@ func decodeFetchRequest(data []byte) (*Request, error) {
 		return nil, ErrInvalidFetchRequest
 	}
 
-	offset := GetOffset(data[offsetOffset : offsetOffset+OffsetFieldSize])
-
 	return &Request{
 		Type:           RequestFetch,
 		ClientInstance: string(data[ClientInstanceOffset:topicLengthOffset]),
-		Topic:          string(data[topicOffset:offsetOffset]),
-		Offset:         offset,
+
+		Fetch: &FetchRequest{
+			Topic:  string(data[topicOffset:offsetOffset]),
+			Offset: GetOffset(data[offsetOffset : offsetOffset+OffsetFieldSize]),
+		},
 	}, nil
 }
 
