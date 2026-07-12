@@ -22,18 +22,48 @@ func (batcher *Batcher) HasBatch() bool {
 	return batcher.batch != nil
 }
 
-func (batcher *Batcher) CanAdd(record *batch.Record) bool {
+// Append adds a record to the active batch.
+// If a batch becomes complete, ownership of it is transferred to the caller.
+func (batcher *Batcher) Append(record *batch.Record) *batch.RecordBatch {
 	if batcher.batch == nil {
-		return true
+		batcher.newBatch(record)
+		return nil
 	}
 
+	if !batcher.canAppend(record) {
+		recordBatch := batcher.batch
+		batcher.newBatch(record)
+
+		return recordBatch
+	}
+
+	batcher.appendRecord(record)
+
+	if batcher.shouldFlush() {
+		recordBatch := batcher.batch
+		batcher.batch = nil
+
+		return recordBatch
+	}
+
+	return nil
+}
+
+func (batcher *Batcher) Flush() *batch.RecordBatch {
+	recordBatch := batcher.batch
+	batcher.batch = nil
+
+	return recordBatch
+}
+
+func (batcher *Batcher) canAppend(record *batch.Record) bool {
 	if batcher.batch.RecordCount >= batcher.maxRecords {
 		return false
 	}
 
 	currentBatchSize, err := batch.EncodedBatchSize(batcher.batch)
 	if err != nil {
-		return false
+		panic(err)
 	}
 
 	recordSize := batch.RecordHeaderSize + len(record.Payload)
@@ -50,16 +80,30 @@ func (batcher *Batcher) CanAdd(record *batch.Record) bool {
 	return true
 }
 
-func (batcher *Batcher) Add(record *batch.Record) error {
-	if batcher.batch == nil {
-		batcher.batch = &batch.RecordBatch{
-			FirstTimestamp: record.Timestamp,
-			MaxTimestamp:   record.Timestamp,
-			Compression:    batch.CompressionNone,
-			EncodedRecords: make([]byte, 0),
-		}
+func (batcher *Batcher) shouldFlush() bool {
+	if batcher.batch.RecordCount >= batcher.maxRecords {
+		return true
 	}
 
+	batchSize, err := batch.EncodedBatchSize(batcher.batch)
+	if err != nil {
+		panic(err)
+	}
+
+	return batchSize >= int(batcher.maxBytes)
+}
+
+func (batcher *Batcher) newBatch(record *batch.Record) {
+	batcher.batch = &batch.RecordBatch{
+		FirstTimestamp: record.Timestamp,
+		MaxTimestamp:   record.Timestamp,
+		Compression:    batch.CompressionNone,
+	}
+
+	batcher.appendRecord(record)
+}
+
+func (batcher *Batcher) appendRecord(record *batch.Record) {
 	batcher.batch.RecordCount++
 	batcher.batch.MaxTimestamp = record.Timestamp
 
@@ -67,34 +111,4 @@ func (batcher *Batcher) Add(record *batch.Record) error {
 		batcher.batch.EncodedRecords,
 		batch.EncodeRecord(record)...,
 	)
-
-	return nil
-}
-
-func (batcher *Batcher) ShouldFlush() bool {
-	if batcher.batch == nil {
-		return false
-	}
-
-	if batcher.batch.RecordCount >= batcher.maxRecords {
-		return true
-	}
-
-	batchSize, err := batch.EncodedBatchSize(batcher.batch)
-	if err != nil {
-		return false
-	}
-
-	return batchSize >= int(batcher.maxBytes)
-}
-
-func (batcher *Batcher) Flush() *batch.RecordBatch {
-	if batcher.batch == nil {
-		return nil
-	}
-
-	recordBatch := batcher.batch
-	batcher.batch = nil
-
-	return recordBatch
 }

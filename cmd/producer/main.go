@@ -12,19 +12,27 @@ import (
 
 	"kafka-lite/internal/batch"
 	"kafka-lite/internal/logger"
-	"kafka-lite/internal/protocol"
 )
 
 const (
-	address      = "localhost:9092"
-	topic        = "default"
-	retryTimeout = 100 * time.Millisecond
+	address = "localhost:9092"
+	topic   = "default"
 
 	maxBatchRecords = 100
 	maxBatchBytes   = 64 << 10 // 64 KiB
+	linger          = 5 * time.Millisecond
+
+	retryTimeout = 100 * time.Millisecond
 )
 
-var ErrProducerClosed = errors.New("producer closed")
+type ProducerConfig struct {
+	MaxBatchRecords uint32
+	MaxBatchBytes   uint32
+
+	Linger time.Duration
+}
+
+var errProducerClosed = errors.New("producer closed")
 
 func main() {
 	if err := logger.Init("producer", logger.LevelInfo); err != nil {
@@ -37,12 +45,32 @@ func main() {
 	for {
 		connection := connect()
 
-		err := producerLoop(connection, reader)
+		producer := NewProducer(
+			connection,
+			ProducerConfig{
+				MaxBatchRecords: maxBatchRecords,
+				MaxBatchBytes:   maxBatchBytes,
+				Linger:          linger,
+			},
+		)
 
-		_ = connection.Close()
+		err := producerLoop(producer, reader)
 
-		if errors.Is(err, ErrProducerClosed) {
+		if errors.Is(err, errProducerClosed) {
+			if err := producer.Close(); err != nil {
+				logger.Warn(
+					"producer_close_failed",
+					logger.Err(err),
+				)
+			}
 			return
+		}
+
+		if err := connection.Close(); err != nil {
+			logger.Warn(
+				"connection_close_failed",
+				logger.Err(err),
+			)
 		}
 
 		logger.Warn(
@@ -93,92 +121,14 @@ func connect() net.Conn {
 	}
 }
 
-func flushBatch(connection net.Conn, batcher *Batcher) error {
-	recordBatch := batcher.Flush()
-	if recordBatch == nil {
-		return nil
-	}
-
-	request := &protocol.Request{
-		Type:           protocol.RequestProduce,
-		ClientInstance: logger.Instance(),
-		Produce: &protocol.ProduceRequest{
-			Topic: topic,
-			Batch: recordBatch,
-		},
-	}
-
-	frame, err := protocol.EncodeRequest(request)
-	if err != nil {
-		logger.Fatal(
-			"request_encode_failed",
-			logger.Err(err),
-		)
-	}
-
-	if err := protocol.WriteFrame(connection, frame); err != nil {
-		return err
-	}
-
-	frame, err = protocol.ReadFrame(connection)
-	if err != nil {
-		return err
-	}
-
-	response, err := protocol.DecodeResponse(frame)
-	if err != nil {
-		logger.Fatal(
-			"response_decode_failed",
-			logger.Err(err),
-		)
-	}
-
-	if response.StatusCode != protocol.StatusOK {
-		logger.Error(
-			"batch_produce_failed",
-			logger.Str("status", response.StatusCode.String()),
-			logger.Str("topic", topic),
-		)
-
-		fmt.Printf("Produce failed: %v\n", response.StatusCode)
-		return nil
-	}
-
-	offset := protocol.GetOffset(response.Payload)
-
-	batchSize, _ := batch.EncodedBatchSize(recordBatch)
-	logger.Info(
-		"batch_produced",
-		logger.Uint64("base_offset", offset),
-		logger.Uint32("record_count", recordBatch.RecordCount),
-		logger.Int("encoded_batch_size", batchSize),
-	)
-
-	fmt.Printf(
-		"Stored batch at base offset %d (%d records)\n",
-		offset,
-		recordBatch.RecordCount,
-	)
-
-	return nil
-}
-
-func producerLoop(connection net.Conn, reader *bufio.Reader) error {
-	batcher := NewBatcher(
-		maxBatchRecords,
-		maxBatchBytes,
-	)
-
+func producerLoop(producer *Producer, reader *bufio.Reader) error {
 	for {
 		fmt.Print("> ")
 
 		message, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				if err := flushBatch(connection, batcher); err != nil {
-					return err
-				}
-				return nil
+				return errProducerClosed
 			}
 
 			logger.Fatal(
@@ -194,23 +144,8 @@ func producerLoop(connection net.Conn, reader *bufio.Reader) error {
 			Payload:   []byte(message),
 		}
 
-		if !batcher.CanAdd(record) {
-			if err := flushBatch(connection, batcher); err != nil {
-				return err
-			}
-		}
-
-		if err := batcher.Add(record); err != nil {
-			logger.Fatal(
-				"batch_add_failed",
-				logger.Err(err),
-			)
-		}
-
-		if batcher.ShouldFlush() {
-			if err := flushBatch(connection, batcher); err != nil {
-				return err
-			}
+		if err := producer.Produce(record); err != nil {
+			return err
 		}
 	}
 }
