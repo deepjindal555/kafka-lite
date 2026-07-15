@@ -171,7 +171,9 @@ func (producer *Producer) sendBatch(recordBatch *batch.RecordBatch) error {
 			logger.Str("topic", topic),
 		)
 
-		fmt.Printf("Produce failed: %v\n", response.StatusCode)
+		if producer.config.PrintBatchAcks {
+			fmt.Printf("Produce failed: %v\n", response.StatusCode)
+		}
 		return nil
 	}
 
@@ -186,11 +188,13 @@ func (producer *Producer) sendBatch(recordBatch *batch.RecordBatch) error {
 		logger.Int("encoded_batch_size", batchSize),
 	)
 
-	fmt.Printf(
-		"Stored batch at base offset %d (%d records)\n",
-		offset,
-		recordBatch.RecordCount,
-	)
+	if producer.config.PrintBatchAcks {
+		fmt.Printf(
+			"Stored batch at base offset %d (%d records)\n",
+			offset,
+			recordBatch.RecordCount,
+		)
+	}
 
 	return nil
 }

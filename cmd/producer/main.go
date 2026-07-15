@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -30,29 +31,43 @@ type ProducerConfig struct {
 	MaxBatchBytes   uint32
 
 	Linger time.Duration
+
+	PrintBatchAcks bool
 }
 
 var errProducerClosed = errors.New("producer closed")
 
 func main() {
+	config, err := parseProducerConfig(os.Args[1:])
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "producer: %v\n", err)
+		os.Exit(2)
+	}
+
 	if err := logger.Init("producer", logger.LevelInfo); err != nil {
 		panic(err)
 	}
 	defer logger.Close()
 
+	if config.Automatic {
+		runAutomaticProducer(config)
+		return
+	}
+
+	runManualProducer(config.Producer)
+}
+
+func runManualProducer(config ProducerConfig) {
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
 		connection := connect()
 
-		producer := NewProducer(
-			connection,
-			ProducerConfig{
-				MaxBatchRecords: maxBatchRecords,
-				MaxBatchBytes:   maxBatchBytes,
-				Linger:          linger,
-			},
-		)
+		producer := NewProducer(connection, config)
 
 		err := producerLoop(producer, reader)
 
@@ -81,6 +96,39 @@ func main() {
 
 		time.Sleep(retryTimeout)
 	}
+}
+
+func runAutomaticProducer(config *CLIConfig) {
+	connection := connect()
+	producer := NewProducer(connection, config.Producer)
+
+	logger.Info(
+		"automatic_workload_started",
+		logger.Uint64("messages", config.Workload.Messages),
+		logger.Str("mode", string(config.Workload.Mode)),
+		logger.Uint64("rate", config.Workload.Rate),
+	)
+
+	if err := automaticProducerLoop(producer, config.Workload); err != nil {
+		_ = connection.Close()
+		logger.Fatal(
+			"automatic_workload_failed",
+			logger.Err(err),
+		)
+	}
+
+	if err := producer.Close(); err != nil {
+		logger.Fatal(
+			"producer_close_failed",
+			logger.Err(err),
+		)
+	}
+
+	logger.Info(
+		"automatic_workload_completed",
+		logger.Uint64("messages", config.Workload.Messages),
+		logger.Str("mode", string(config.Workload.Mode)),
+	)
 }
 
 func connect() net.Conn {
