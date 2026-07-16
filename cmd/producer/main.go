@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,11 +14,11 @@ import (
 
 	"kafka-lite/internal/batch"
 	"kafka-lite/internal/logger"
+	"kafka-lite/internal/protocol"
 )
 
 const (
 	address = "localhost:9092"
-	topic   = "default"
 
 	maxBatchRecords = 100
 	maxBatchBytes   = 64 << 10 // 64 KiB
@@ -33,6 +34,8 @@ type ProducerConfig struct {
 	Linger time.Duration
 
 	PrintBatchAcks bool
+
+	Topics []string
 }
 
 var errProducerClosed = errors.New("producer closed")
@@ -67,9 +70,29 @@ func runManualProducer(config ProducerConfig) {
 	for {
 		connection := connect()
 
+		topics, err := fetchMetadata(connection)
+		if err != nil {
+			if err := connection.Close(); err != nil {
+				logger.Warn(
+					"connection_close_failed",
+					logger.Err(err),
+				)
+			}
+
+			logger.Warn(
+				"metadata_fetch_failed",
+				logger.Err(err),
+			)
+
+			time.Sleep(retryTimeout)
+			continue
+		}
+
+		config.Topics = topics
+
 		producer := NewProducer(connection, config)
 
-		err := producerLoop(producer, reader)
+		err = manualProducerLoop(producer, config.Topics, reader)
 
 		if errors.Is(err, errProducerClosed) {
 			if err := producer.Close(); err != nil {
@@ -100,6 +123,19 @@ func runManualProducer(config ProducerConfig) {
 
 func runAutomaticProducer(config *CLIConfig) {
 	connection := connect()
+
+	topics, err := fetchMetadata(connection)
+	if err != nil {
+		_ = connection.Close()
+
+		logger.Fatal(
+			"metadata_fetch_failed",
+			logger.Err(err),
+		)
+	}
+
+	config.Producer.Topics = topics
+
 	producer := NewProducer(connection, config.Producer)
 
 	logger.Info(
@@ -169,11 +205,110 @@ func connect() net.Conn {
 	}
 }
 
-func producerLoop(producer *Producer, reader *bufio.Reader) error {
+func fetchMetadata(connection net.Conn) ([]string, error) {
+	request := &protocol.Request{
+		Type:           protocol.RequestMetadata,
+		ClientInstance: logger.Instance(),
+		Metadata:       &protocol.MetadataRequest{},
+	}
+
+	data, err := protocol.EncodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := protocol.WriteFrame(connection, data); err != nil {
+		return nil, err
+	}
+
+	data, err = protocol.ReadFrame(connection)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := protocol.DecodeResponse(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Type != protocol.ResponseMetadata {
+		return nil, protocol.ErrUnexpectedResponse
+	}
+
+	if response.StatusCode != protocol.StatusOK {
+		return nil, fmt.Errorf("metadata request failed with status %s", response.StatusCode.String())
+	}
+
+	payload := response.Payload
+
+	if len(payload) < protocol.TopicCountFieldSize {
+		return nil, protocol.ErrInvalidMetadataResponse
+	}
+
+	topicCount := binary.BigEndian.Uint16(
+		payload[:protocol.TopicCountFieldSize],
+	)
+
+	offset := protocol.TopicCountFieldSize
+
+	topics := make([]string, 0, topicCount)
+
+	for range topicCount {
+		if len(payload) < offset+protocol.TopicLengthFieldSize {
+			return nil, protocol.ErrInvalidMetadataResponse
+		}
+
+		topicLength := binary.BigEndian.Uint16(
+			payload[offset : offset+protocol.TopicLengthFieldSize],
+		)
+
+		offset += protocol.TopicLengthFieldSize
+
+		if len(payload) < offset+int(topicLength) {
+			return nil, protocol.ErrInvalidMetadataResponse
+		}
+
+		topics = append(
+			topics,
+			string(payload[offset:offset+int(topicLength)]),
+		)
+
+		offset += int(topicLength)
+	}
+
+	if offset != len(payload) {
+		return nil, protocol.ErrInvalidMetadataResponse
+	}
+
+	return topics, nil
+}
+
+func isValidTopic(topics []string, topic string) bool {
+	for _, t := range topics {
+		if t == topic {
+			return true
+		}
+	}
+
+	return false
+}
+
+func manualProducerLoop(producer *Producer, topics []string, reader *bufio.Reader) error {
+	fmt.Println("Available topics:")
+
+	for _, topic := range topics {
+		fmt.Printf("  %s\n", topic)
+	}
+
+	fmt.Println()
+	fmt.Println("Enter messages as:")
+	fmt.Println("topic> message")
+	fmt.Println()
+
 	for {
 		fmt.Print("> ")
 
-		message, err := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
 				return errProducerClosed
@@ -185,14 +320,28 @@ func producerLoop(producer *Producer, reader *bufio.Reader) error {
 			)
 		}
 
-		message = strings.TrimRight(message, "\r\n")
+		line = strings.TrimRight(line, "\r\n")
+
+		topic, message, ok := strings.Cut(line, ">")
+		if !ok {
+			fmt.Println("Invalid input. Expected: <topic> > <message>")
+			continue
+		}
+
+		topic = strings.TrimSpace(topic)
+		message = strings.TrimSpace(message)
+
+		if !isValidTopic(topics, topic) {
+			fmt.Printf("Unknown topic %q\n", topic)
+			continue
+		}
 
 		record := &batch.Record{
 			Timestamp: time.Now().UnixNano(),
 			Payload:   []byte(message),
 		}
 
-		if err := producer.Produce(record); err != nil {
+		if err := producer.Produce(topic, record); err != nil {
 			return err
 		}
 	}

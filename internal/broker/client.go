@@ -29,6 +29,9 @@ func (broker *Broker) handleClient(connection net.Conn) {
 		case protocol.RequestFetch:
 			response, err = broker.handleFetch(request)
 
+		case protocol.RequestMetadata:
+			response, err = broker.handleMetadata(request)
+
 		default:
 			return
 		}

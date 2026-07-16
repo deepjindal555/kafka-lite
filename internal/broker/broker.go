@@ -2,6 +2,7 @@ package broker
 
 import (
 	"net"
+	"sort"
 	"sync"
 )
 
@@ -54,6 +55,20 @@ func (broker *Broker) CreateTopic(name string, directory string, maxSegmentSize 
 	broker.topics[name] = topic
 
 	return nil
+}
+
+func (broker *Broker) TopicNames() []string {
+	broker.mu.RLock()
+	defer broker.mu.RUnlock()
+
+	topics := make([]string, 0, len(broker.topics))
+
+	for topic := range broker.topics {
+		topics = append(topics, topic)
+	}
+	sort.Strings(topics)
+
+	return topics
 }
 
 func (broker *Broker) getTopic(name string) (*Topic, bool) {

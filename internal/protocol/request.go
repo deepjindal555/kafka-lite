@@ -21,6 +21,7 @@ const (
 	RequestUnknown RequestType = iota
 	RequestProduce
 	RequestFetch
+	RequestMetadata
 )
 
 type ProduceRequest struct {
@@ -33,12 +34,16 @@ type FetchRequest struct {
 	Offset uint64
 }
 
+type MetadataRequest struct {
+}
+
 type Request struct {
 	Type           RequestType
 	ClientInstance string
 
-	Produce *ProduceRequest
-	Fetch   *FetchRequest
+	Produce  *ProduceRequest
+	Fetch    *FetchRequest
+	Metadata *MetadataRequest
 }
 
 func EncodeRequest(request *Request) ([]byte, error) {
@@ -48,6 +53,9 @@ func EncodeRequest(request *Request) ([]byte, error) {
 
 	case RequestFetch:
 		return encodeFetchRequest(request)
+
+	case RequestMetadata:
+		return encodeMetadataRequest(request)
 
 	default:
 		return nil, ErrUnknownRequestType
@@ -79,6 +87,9 @@ func DecodeRequest(data []byte) (*Request, error) {
 
 	case RequestFetch:
 		return decodeFetchRequest(data)
+
+	case RequestMetadata:
+		return decodeMetadataRequest(data)
 
 	default:
 		return nil, ErrUnknownRequestType
@@ -278,6 +289,65 @@ func decodeFetchRequest(data []byte) (*Request, error) {
 			Topic:  string(data[topicOffset:offsetOffset]),
 			Offset: GetOffset(data[offsetOffset : offsetOffset+OffsetFieldSize]),
 		},
+	}, nil
+}
+
+func encodeMetadataRequest(request *Request) ([]byte, error) {
+	if request.Metadata == nil {
+		return nil, ErrNilMetadataRequest
+	}
+
+	if len(request.ClientInstance) > math.MaxUint16 {
+		return nil, ErrInvalidClientInstance
+	}
+
+	clientInstanceLength := len(request.ClientInstance)
+
+	frameLength := FrameHeaderSize + ClientInstanceLengthFieldSize + clientInstanceLength
+	data := make([]byte, frameLength)
+
+	binary.BigEndian.PutUint32(
+		data[LengthOffset:VersionOffset],
+		uint32(frameLength),
+	)
+
+	data[VersionOffset] = ProtocolVersion
+	data[TypeOffset] = byte(RequestMetadata)
+
+	binary.BigEndian.PutUint16(
+		data[ClientInstanceLengthOffset:ClientInstanceOffset],
+		uint16(clientInstanceLength),
+	)
+
+	copy(
+		data[ClientInstanceOffset:],
+		request.ClientInstance,
+	)
+
+	return data, nil
+}
+
+func decodeMetadataRequest(data []byte) (*Request, error) {
+	if len(data) < ClientInstanceOffset {
+		return nil, ErrInvalidMetadataRequest
+	}
+
+	clientInstanceLength := binary.BigEndian.Uint16(
+		data[ClientInstanceLengthOffset:ClientInstanceOffset],
+	)
+
+	clientInstanceOffset := ClientInstanceOffset
+	end := clientInstanceOffset + int(clientInstanceLength)
+
+	if len(data) != end {
+		return nil, ErrInvalidMetadataRequest
+	}
+
+	return &Request{
+		Type:           RequestMetadata,
+		ClientInstance: string(data[clientInstanceOffset:end]),
+
+		Metadata: &MetadataRequest{},
 	}, nil
 }
 

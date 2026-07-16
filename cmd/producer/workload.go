@@ -53,6 +53,14 @@ func (generator *workloadGenerator) randomPayload(size int) []byte {
 	return payload
 }
 
+func (generator *workloadGenerator) nextTopic(topics []string) string {
+	if len(topics) == 0 {
+		panic("no topics configured")
+	}
+
+	return topics[generator.random.Intn(len(topics))]
+}
+
 func automaticProducerLoop(producer *Producer, config WorkloadConfig) error {
 	generator := newWorkloadGenerator(config)
 	interval := rateInterval(config.Rate)
@@ -67,7 +75,7 @@ func automaticProducerLoop(producer *Producer, config WorkloadConfig) error {
 			Payload:   generator.NextPayload(),
 		}
 
-		if err := producer.Produce(record); err != nil {
+		if err := producer.Produce(generator.nextTopic(producer.config.Topics), record); err != nil {
 			return err
 		}
 	}

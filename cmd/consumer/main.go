@@ -1,8 +1,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"kafka-lite/internal/logger"
@@ -11,12 +13,25 @@ import (
 
 const (
 	address      = "localhost:9092"
-	topic        = "default"
 	retryTimeout = 100 * time.Millisecond
 )
 
+type ConsumerConfig struct {
+	Topic string
+}
+
 func main() {
-	if err := logger.Init("consumer", logger.LevelInfo); err != nil {
+	config := ConsumerConfig{}
+	flag.StringVar(&config.Topic, "topic", "", "topic")
+	flag.Parse()
+
+	if config.Topic == "" {
+		fmt.Fprintln(os.Stderr, "consumer: --topic is required")
+		flag.PrintDefaults()
+		os.Exit(2)
+	}
+
+	if err := logger.Init(fmt.Sprintf("consumer-%s", config.Topic), logger.LevelInfo); err != nil {
 		panic(err)
 	}
 	defer logger.Close()
@@ -25,7 +40,7 @@ func main() {
 	for {
 		connection := connect()
 
-		err := consumerLoop(connection, &nextOffset)
+		err := consumerLoop(connection, config.Topic, &nextOffset)
 
 		_ = connection.Close()
 
@@ -77,7 +92,7 @@ func connect() net.Conn {
 	}
 }
 
-func consumerLoop(connection net.Conn, nextOffset *uint64) error {
+func consumerLoop(connection net.Conn, topic string, nextOffset *uint64) error {
 	for {
 		request := &protocol.Request{
 			Type:           protocol.RequestFetch,
@@ -113,10 +128,15 @@ func consumerLoop(connection net.Conn, nextOffset *uint64) error {
 			)
 		}
 
+		if response.Type != protocol.ResponseFetch {
+			return protocol.ErrUnexpectedResponse
+		}
+
 		switch response.StatusCode {
 		case protocol.StatusOK:
 			logger.Info(
 				"message_fetched",
+				logger.Str("topic", topic),
 				logger.Uint64("offset", *nextOffset),
 				logger.Int("size", len(response.Payload)),
 			)
@@ -127,10 +147,18 @@ func consumerLoop(connection net.Conn, nextOffset *uint64) error {
 		case protocol.StatusOffsetNotFound:
 			time.Sleep(retryTimeout)
 
+		case protocol.StatusTopicNotFound:
+			logger.Fatal(
+				"topic_not_found",
+				logger.Str("topic", topic),
+				logger.Str("status", response.StatusCode.String()),
+			)
+
 		default:
 			logger.Fatal(
 				"message_fetch_failed",
-				logger.Int("status", int(response.StatusCode)),
+				logger.Str("topic", topic),
+				logger.Str("status", response.StatusCode.String()),
 			)
 		}
 	}

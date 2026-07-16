@@ -1,7 +1,9 @@
 package broker
 
 import (
+	"encoding/binary"
 	"errors"
+	"math"
 
 	"kafka-lite/internal/logger"
 	"kafka-lite/internal/partition"
@@ -99,6 +101,53 @@ func (broker *Broker) handleFetch(request *protocol.Request) (*protocol.Response
 
 	return &protocol.Response{
 		Type:       protocol.ResponseFetch,
+		StatusCode: protocol.StatusOK,
+		Payload:    payload,
+	}, nil
+}
+
+func (broker *Broker) handleMetadata(request *protocol.Request) (*protocol.Response, error) {
+	topics := broker.TopicNames()
+
+	payloadSize := protocol.TopicCountFieldSize
+
+	for _, topic := range topics {
+		if len(topic) > math.MaxUint16 {
+			return nil, protocol.ErrInvalidTopic
+		}
+
+		payloadSize += protocol.TopicLengthFieldSize + len(topic)
+	}
+
+	payload := make([]byte, payloadSize)
+
+	binary.BigEndian.PutUint16(
+		payload[:protocol.TopicCountFieldSize],
+		uint16(len(topics)),
+	)
+
+	offset := protocol.TopicCountFieldSize
+
+	for _, topic := range topics {
+		binary.BigEndian.PutUint16(
+			payload[offset:offset+protocol.TopicLengthFieldSize],
+			uint16(len(topic)),
+		)
+
+		offset += protocol.TopicLengthFieldSize
+		copy(payload[offset:offset+len(topic)], topic)
+
+		offset += len(topic)
+	}
+
+	logger.Info(
+		"metadata_sent",
+		logger.Str("client", request.ClientInstance),
+		logger.Int("topic_count", len(topics)),
+	)
+
+	return &protocol.Response{
+		Type:       protocol.ResponseMetadata,
 		StatusCode: protocol.StatusOK,
 		Payload:    payload,
 	}, nil

@@ -4,6 +4,7 @@ import "encoding/binary"
 
 const (
 	StatusCodeFieldSize = 1
+	TopicCountFieldSize = 2
 
 	ResponsePayloadOffset = PayloadOffset + StatusCodeFieldSize
 )
@@ -14,6 +15,7 @@ const (
 	ResponseUnknown ResponseType = iota
 	ResponseProduce
 	ResponseFetch
+	ResponseMetadata
 )
 
 type StatusCode uint8
@@ -39,6 +41,9 @@ func EncodeResponse(response *Response) ([]byte, error) {
 
 	case ResponseFetch:
 		return encodeFetchResponse(response)
+
+	case ResponseMetadata:
+		return encodeMetadataResponse(response)
 
 	default:
 		return nil, ErrUnknownResponseType
@@ -70,6 +75,9 @@ func DecodeResponse(data []byte) (*Response, error) {
 
 	case ResponseFetch:
 		return decodeFetchResponse(data)
+
+	case ResponseMetadata:
+		return decodeMetadataResponse(data)
 
 	default:
 		return nil, ErrUnknownResponseType
@@ -127,6 +135,30 @@ func decodeFetchResponse(data []byte) (*Response, error) {
 
 	return &Response{
 		Type:       ResponseFetch,
+		StatusCode: StatusCode(data[PayloadOffset]),
+		Payload:    payload,
+	}, nil
+}
+
+func encodeMetadataResponse(response *Response) ([]byte, error) {
+	frameLength := FrameHeaderSize + StatusCodeFieldSize + len(response.Payload)
+	data := make([]byte, frameLength)
+
+	binary.BigEndian.PutUint32(data[LengthOffset:VersionOffset], uint32(frameLength))
+	data[VersionOffset] = ProtocolVersion
+	data[TypeOffset] = byte(ResponseMetadata)
+	data[PayloadOffset] = byte(response.StatusCode)
+	copy(data[ResponsePayloadOffset:], response.Payload)
+
+	return data, nil
+}
+
+func decodeMetadataResponse(data []byte) (*Response, error) {
+	payload := make([]byte, len(data)-ResponsePayloadOffset)
+	copy(payload, data[ResponsePayloadOffset:])
+
+	return &Response{
+		Type:       ResponseMetadata,
 		StatusCode: StatusCode(data[PayloadOffset]),
 		Payload:    payload,
 	}, nil

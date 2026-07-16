@@ -13,6 +13,9 @@ func (requestType RequestType) String() string {
 	case RequestFetch:
 		return "Fetch"
 
+	case RequestMetadata:
+		return "MetaData"
+
 	default:
 		return fmt.Sprintf("Unknown(%d)", requestType)
 	}
@@ -28,6 +31,9 @@ func (responseType ResponseType) String() string {
 
 	case ResponseFetch:
 		return "Fetch"
+
+	case ResponseMetadata:
+		return "MetaData"
 
 	default:
 		return fmt.Sprintf("Unknown(%d)", responseType)
