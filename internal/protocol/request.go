@@ -11,6 +11,8 @@ const (
 	TopicLengthFieldSize          = 2
 	OffsetFieldSize               = 8
 
+	PartitionCountFieldSize = 4
+
 	ClientInstanceLengthOffset = PayloadOffset
 	ClientInstanceOffset       = ClientInstanceLengthOffset + ClientInstanceLengthFieldSize
 )
@@ -30,8 +32,8 @@ type ProduceRequest struct {
 }
 
 type FetchRequest struct {
-	Topic  string
-	Offset uint64
+	Topic   string
+	Offsets []uint64
 }
 
 type MetadataRequest struct {
@@ -67,11 +69,11 @@ func DecodeRequest(data []byte) (*Request, error) {
 		return nil, ErrFrameTooSmall
 	}
 
-	length := binary.BigEndian.Uint32(
+	length := int(binary.BigEndian.Uint32(
 		data[LengthOffset:VersionOffset],
-	)
+	))
 
-	if int(length) != len(data) {
+	if length != len(data) {
 		return nil, ErrInvalidLength
 	}
 
@@ -172,12 +174,12 @@ func decodeProduceRequest(data []byte) (*Request, error) {
 		return nil, ErrInvalidProduceRequest
 	}
 
-	topicLength := binary.BigEndian.Uint16(
+	topicLength := int(binary.BigEndian.Uint16(
 		data[topicLengthOffset : topicLengthOffset+TopicLengthFieldSize],
-	)
+	))
 
 	topicOffset := topicLengthOffset + TopicLengthFieldSize
-	batchOffset := topicOffset + int(topicLength)
+	batchOffset := topicOffset + topicLength
 
 	if len(data) < batchOffset {
 		return nil, ErrInvalidProduceRequest
@@ -221,7 +223,8 @@ func encodeFetchRequest(request *Request) ([]byte, error) {
 			clientInstanceLength +
 			TopicLengthFieldSize +
 			topicLength +
-			OffsetFieldSize
+			PartitionCountFieldSize +
+			len(request.Fetch.Offsets)*OffsetFieldSize
 
 	data := make([]byte, frameLength)
 
@@ -246,11 +249,20 @@ func encodeFetchRequest(request *Request) ([]byte, error) {
 	)
 
 	topicOffset := topicLengthOffset + TopicLengthFieldSize
-	offsetOffset := topicOffset + topicLength
+	partitionCountOffset := topicOffset + topicLength
+	offsetsOffset := partitionCountOffset + PartitionCountFieldSize
 
 	copy(data[ClientInstanceOffset:topicLengthOffset], request.ClientInstance)
-	copy(data[topicOffset:offsetOffset], request.Fetch.Topic)
-	PutOffset(data[offsetOffset:], request.Fetch.Offset)
+	copy(data[topicOffset:partitionCountOffset], request.Fetch.Topic)
+
+	binary.BigEndian.PutUint32(
+		data[partitionCountOffset:offsetsOffset],
+		uint32(len(request.Fetch.Offsets)),
+	)
+
+	for i, offset := range request.Fetch.Offsets {
+		PutOffset(data[offsetsOffset+i*OffsetFieldSize:], offset)
+	}
 
 	return data, nil
 }
@@ -260,25 +272,40 @@ func decodeFetchRequest(data []byte) (*Request, error) {
 		return nil, ErrInvalidFetchRequest
 	}
 
-	clientInstanceLength := binary.BigEndian.Uint16(
+	clientInstanceLength := int(binary.BigEndian.Uint16(
 		data[ClientInstanceLengthOffset:ClientInstanceOffset],
-	)
+	))
 
-	topicLengthOffset := ClientInstanceOffset + int(clientInstanceLength)
+	topicLengthOffset := ClientInstanceOffset + clientInstanceLength
 
 	if len(data) < topicLengthOffset+TopicLengthFieldSize {
 		return nil, ErrInvalidFetchRequest
 	}
 
-	topicLength := binary.BigEndian.Uint16(
+	topicLength := int(binary.BigEndian.Uint16(
 		data[topicLengthOffset : topicLengthOffset+TopicLengthFieldSize],
-	)
+	))
 
 	topicOffset := topicLengthOffset + TopicLengthFieldSize
-	offsetOffset := topicOffset + int(topicLength)
+	partitionCountOffset := topicOffset + topicLength
 
-	if len(data) != offsetOffset+OffsetFieldSize {
+	if len(data) < partitionCountOffset+PartitionCountFieldSize {
 		return nil, ErrInvalidFetchRequest
+	}
+
+	offsetsOffset := partitionCountOffset + PartitionCountFieldSize
+
+	partitionCount := int(binary.BigEndian.Uint32(
+		data[partitionCountOffset:offsetsOffset],
+	))
+
+	if len(data) != offsetsOffset+partitionCount*OffsetFieldSize {
+		return nil, ErrInvalidFetchRequest
+	}
+
+	offsets := make([]uint64, partitionCount)
+	for i := range offsets {
+		offsets[i] = GetOffset(data[offsetsOffset+i*OffsetFieldSize : offsetsOffset+(i+1)*OffsetFieldSize])
 	}
 
 	return &Request{
@@ -286,8 +313,8 @@ func decodeFetchRequest(data []byte) (*Request, error) {
 		ClientInstance: string(data[ClientInstanceOffset:topicLengthOffset]),
 
 		Fetch: &FetchRequest{
-			Topic:  string(data[topicOffset:offsetOffset]),
-			Offset: GetOffset(data[offsetOffset : offsetOffset+OffsetFieldSize]),
+			Topic:   string(data[topicOffset:partitionCountOffset]),
+			Offsets: offsets,
 		},
 	}, nil
 }

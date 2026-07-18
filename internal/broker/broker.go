@@ -2,8 +2,9 @@ package broker
 
 import (
 	"net"
-	"sort"
 	"sync"
+
+	"kafka-lite/internal/protocol"
 )
 
 type Broker struct {
@@ -39,7 +40,7 @@ func (broker *Broker) Close() error {
 	return broker.listener.Close()
 }
 
-func (broker *Broker) CreateTopic(name string, directory string, maxSegmentSize int64) error {
+func (broker *Broker) CreateTopic(name string, directory string, partitionCount int, maxSegmentSize int64) error {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
 
@@ -47,7 +48,7 @@ func (broker *Broker) CreateTopic(name string, directory string, maxSegmentSize 
 		return ErrTopicAlreadyExists
 	}
 
-	topic, err := NewTopic(name, directory, maxSegmentSize)
+	topic, err := NewTopic(name, directory, partitionCount, maxSegmentSize)
 	if err != nil {
 		return err
 	}
@@ -57,16 +58,18 @@ func (broker *Broker) CreateTopic(name string, directory string, maxSegmentSize 
 	return nil
 }
 
-func (broker *Broker) TopicNames() []string {
+func (broker *Broker) TopicMetadata() []protocol.TopicMetadata {
 	broker.mu.RLock()
 	defer broker.mu.RUnlock()
 
-	topics := make([]string, 0, len(broker.topics))
+	topics := make([]protocol.TopicMetadata, 0, len(broker.topics))
 
-	for topic := range broker.topics {
-		topics = append(topics, topic)
+	for _, topic := range broker.topics {
+		topics = append(topics, protocol.TopicMetadata{
+			Name:           topic.Name,
+			PartitionCount: uint32(len(topic.Partitions)),
+		})
 	}
-	sort.Strings(topics)
 
 	return topics
 }

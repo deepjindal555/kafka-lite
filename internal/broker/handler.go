@@ -1,9 +1,7 @@
 package broker
 
 import (
-	"encoding/binary"
 	"errors"
-	"math"
 
 	"kafka-lite/internal/logger"
 	"kafka-lite/internal/partition"
@@ -17,13 +15,11 @@ func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Respon
 		return &protocol.Response{
 			Type:       protocol.ResponseProduce,
 			StatusCode: protocol.StatusTopicNotFound,
-			Payload:    nil,
+			Produce:    &protocol.ProduceResponse{},
 		}, nil
 	}
 
-	partition := topic.Partitions[0]
-
-	offset, err := partition.AppendBatch(request.Produce.Batch)
+	offset, err := topic.AppendBatch(request.Produce.Batch)
 	if err != nil {
 		logger.Error(
 			"message_produce_failed",
@@ -35,7 +31,7 @@ func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Respon
 		return &protocol.Response{
 			Type:       protocol.ResponseProduce,
 			StatusCode: mapStatusCode(err),
-			Payload:    nil,
+			Produce:    &protocol.ProduceResponse{},
 		}, nil
 	}
 
@@ -48,13 +44,12 @@ func (broker *Broker) handleProduce(request *protocol.Request) (*protocol.Respon
 		logger.Int("records_size", len(request.Produce.Batch.EncodedRecords)),
 	)
 
-	payload := make([]byte, protocol.OffsetFieldSize)
-	protocol.PutOffset(payload, offset)
-
 	return &protocol.Response{
 		Type:       protocol.ResponseProduce,
 		StatusCode: protocol.StatusOK,
-		Payload:    payload,
+		Produce: &protocol.ProduceResponse{
+			BaseOffset: offset,
+		},
 	}, nil
 }
 
@@ -64,81 +59,68 @@ func (broker *Broker) handleFetch(request *protocol.Request) (*protocol.Response
 		return &protocol.Response{
 			Type:       protocol.ResponseFetch,
 			StatusCode: protocol.StatusTopicNotFound,
-			Payload:    nil,
+			Fetch:      &protocol.FetchResponse{},
 		}, nil
 	}
 
-	partition := topic.Partitions[0]
+	records := make([]protocol.PartitionRecord, 0)
 
-	payload, err := partition.Read(request.Fetch.Offset)
-	if err != nil {
-		statusCode := mapStatusCode(err)
+	for partitionID, offset := range request.Fetch.Offsets {
+		partition, err := topic.getPartition(partitionID)
+		if err != nil {
+			return nil, err
+		}
 
-		if statusCode == protocol.StatusInternalError {
+		record, err := partition.Read(offset)
+		if err != nil {
+			statusCode := mapStatusCode(err)
+
+			if statusCode == protocol.StatusOffsetNotFound {
+				continue
+			}
+
 			logger.Error(
 				"message_fetch_failed",
 				logger.Str("client", request.ClientInstance),
 				logger.Str("topic", request.Fetch.Topic),
-				logger.Uint64("offset", request.Fetch.Offset),
+				logger.Int("partition", partitionID),
+				logger.Uint64("offset", offset),
 				logger.Err(err),
 			)
+
+			return &protocol.Response{
+				Type:       protocol.ResponseFetch,
+				StatusCode: statusCode,
+				Fetch:      &protocol.FetchResponse{},
+			}, nil
 		}
 
-		return &protocol.Response{
-			Type:       protocol.ResponseFetch,
-			StatusCode: statusCode,
-			Payload:    nil,
-		}, nil
+		records = append(records, protocol.PartitionRecord{
+			Partition: uint32(partitionID),
+			Record:    record,
+		})
 	}
 
-	logger.Info(
-		"message_fetched",
-		logger.Str("client", request.ClientInstance),
-		logger.Str("topic", request.Fetch.Topic),
-		logger.Uint64("offset", request.Fetch.Offset),
-		logger.Int("size", len(payload)),
-	)
+	if len(records) > 0 {
+		logger.Info(
+			"records_fetched",
+			logger.Str("client", request.ClientInstance),
+			logger.Str("topic", request.Fetch.Topic),
+			logger.Int("records", len(records)),
+		)
+	}
 
 	return &protocol.Response{
 		Type:       protocol.ResponseFetch,
 		StatusCode: protocol.StatusOK,
-		Payload:    payload,
+		Fetch: &protocol.FetchResponse{
+			Records: records,
+		},
 	}, nil
 }
 
 func (broker *Broker) handleMetadata(request *protocol.Request) (*protocol.Response, error) {
-	topics := broker.TopicNames()
-
-	payloadSize := protocol.TopicCountFieldSize
-
-	for _, topic := range topics {
-		if len(topic) > math.MaxUint16 {
-			return nil, protocol.ErrInvalidTopic
-		}
-
-		payloadSize += protocol.TopicLengthFieldSize + len(topic)
-	}
-
-	payload := make([]byte, payloadSize)
-
-	binary.BigEndian.PutUint16(
-		payload[:protocol.TopicCountFieldSize],
-		uint16(len(topics)),
-	)
-
-	offset := protocol.TopicCountFieldSize
-
-	for _, topic := range topics {
-		binary.BigEndian.PutUint16(
-			payload[offset:offset+protocol.TopicLengthFieldSize],
-			uint16(len(topic)),
-		)
-
-		offset += protocol.TopicLengthFieldSize
-		copy(payload[offset:offset+len(topic)], topic)
-
-		offset += len(topic)
-	}
+	topics := broker.TopicMetadata()
 
 	logger.Info(
 		"metadata_sent",
@@ -149,7 +131,9 @@ func (broker *Broker) handleMetadata(request *protocol.Request) (*protocol.Respo
 	return &protocol.Response{
 		Type:       protocol.ResponseMetadata,
 		StatusCode: protocol.StatusOK,
-		Payload:    payload,
+		Metadata: &protocol.MetadataResponse{
+			Topics: topics,
+		},
 	}, nil
 }
 

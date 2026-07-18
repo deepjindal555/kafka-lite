@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,7 +70,7 @@ func runManualProducer(config ProducerConfig) {
 	for {
 		connection := connect()
 
-		topics, err := fetchMetadata(connection)
+		metadata, err := fetchMetadata(connection)
 		if err != nil {
 			if err := connection.Close(); err != nil {
 				logger.Warn(
@@ -88,7 +88,12 @@ func runManualProducer(config ProducerConfig) {
 			continue
 		}
 
-		config.Topics = topics
+		logger.Info(
+			"metadata_received",
+			logger.Int("topic_count", len(metadata)),
+		)
+
+		config.Topics = extractTopicNames(metadata)
 
 		producer := NewProducer(connection, config)
 
@@ -124,7 +129,7 @@ func runManualProducer(config ProducerConfig) {
 func runAutomaticProducer(config *CLIConfig) {
 	connection := connect()
 
-	topics, err := fetchMetadata(connection)
+	metadata, err := fetchMetadata(connection)
 	if err != nil {
 		_ = connection.Close()
 
@@ -134,7 +139,12 @@ func runAutomaticProducer(config *CLIConfig) {
 		)
 	}
 
-	config.Producer.Topics = topics
+	logger.Info(
+		"metadata_received",
+		logger.Int("topic_count", len(metadata)),
+	)
+
+	config.Producer.Topics = extractTopicNames(metadata)
 
 	producer := NewProducer(connection, config.Producer)
 
@@ -205,7 +215,7 @@ func connect() net.Conn {
 	}
 }
 
-func fetchMetadata(connection net.Conn) ([]string, error) {
+func fetchMetadata(connection net.Conn) ([]protocol.TopicMetadata, error) {
 	request := &protocol.Request{
 		Type:           protocol.RequestMetadata,
 		ClientInstance: logger.Instance(),
@@ -239,58 +249,21 @@ func fetchMetadata(connection net.Conn) ([]string, error) {
 		return nil, fmt.Errorf("metadata request failed with status %s", response.StatusCode.String())
 	}
 
-	payload := response.Payload
-
-	if len(payload) < protocol.TopicCountFieldSize {
+	if response.Metadata == nil {
 		return nil, protocol.ErrInvalidMetadataResponse
 	}
 
-	topicCount := binary.BigEndian.Uint16(
-		payload[:protocol.TopicCountFieldSize],
-	)
-
-	offset := protocol.TopicCountFieldSize
-
-	topics := make([]string, 0, topicCount)
-
-	for range topicCount {
-		if len(payload) < offset+protocol.TopicLengthFieldSize {
-			return nil, protocol.ErrInvalidMetadataResponse
-		}
-
-		topicLength := binary.BigEndian.Uint16(
-			payload[offset : offset+protocol.TopicLengthFieldSize],
-		)
-
-		offset += protocol.TopicLengthFieldSize
-
-		if len(payload) < offset+int(topicLength) {
-			return nil, protocol.ErrInvalidMetadataResponse
-		}
-
-		topics = append(
-			topics,
-			string(payload[offset:offset+int(topicLength)]),
-		)
-
-		offset += int(topicLength)
-	}
-
-	if offset != len(payload) {
-		return nil, protocol.ErrInvalidMetadataResponse
-	}
-
-	return topics, nil
+	return response.Metadata.Topics, nil
 }
 
-func isValidTopic(topics []string, topic string) bool {
-	for _, t := range topics {
-		if t == topic {
-			return true
-		}
+func extractTopicNames(metadata []protocol.TopicMetadata) []string {
+	topics := make([]string, len(metadata))
+
+	for i, topic := range metadata {
+		topics[i] = topic.Name
 	}
 
-	return false
+	return topics
 }
 
 func manualProducerLoop(producer *Producer, topics []string, reader *bufio.Reader) error {
@@ -331,8 +304,11 @@ func manualProducerLoop(producer *Producer, topics []string, reader *bufio.Reade
 		topic = strings.TrimSpace(topic)
 		message = strings.TrimSpace(message)
 
-		if !isValidTopic(topics, topic) {
-			fmt.Printf("Unknown topic %q\n", topic)
+		if !slices.Contains(topics, topic) {
+			logger.Warn(
+				"unknown_topic",
+				logger.Str("topic", topic),
+			)
 			continue
 		}
 

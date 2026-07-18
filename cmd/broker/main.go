@@ -12,10 +12,24 @@ const (
 	maxSegmentSize = 10 << 20 // 10 MiB
 )
 
-var topics = []string{
-	"orders",
-	"payments",
-	"logs",
+type TopicConfig struct {
+	Name       string
+	Partitions int
+}
+
+var topics = []TopicConfig{
+	{
+		Name:       "orders",
+		Partitions: 3,
+	},
+	{
+		Name:       "payments",
+		Partitions: 2,
+	},
+	{
+		Name:       "logs",
+		Partitions: 1,
+	},
 }
 
 func main() {
@@ -35,10 +49,10 @@ func main() {
 	defer broker.Close()
 
 	for _, topic := range topics {
-		if err := broker.CreateTopic(topic, filepath.Join(dataDirectory, topic), maxSegmentSize); err != nil {
+		if err := broker.CreateTopic(topic.Name, filepath.Join(dataDirectory, topic.Name), topic.Partitions, maxSegmentSize); err != nil {
 			logger.Fatal(
 				"topic_create_failed",
-				logger.Str("topic", topic),
+				logger.Str("topic", topic.Name),
 				logger.Err(err),
 			)
 		}

@@ -36,11 +36,47 @@ func main() {
 	}
 	defer logger.Close()
 
-	var nextOffset uint64
 	for {
 		connection := connect()
 
-		err := consumerLoop(connection, config.Topic, &nextOffset)
+		metadata, err := fetchMetadata(connection)
+		if err != nil {
+			_ = connection.Close()
+
+			logger.Warn(
+				"metadata_fetch_failed",
+				logger.Err(err),
+			)
+
+			time.Sleep(retryTimeout)
+			continue
+		}
+
+		var partitionCount uint32
+
+		for _, topic := range metadata {
+			if topic.Name == config.Topic {
+				partitionCount = topic.PartitionCount
+				break
+			}
+		}
+
+		if partitionCount == 0 {
+			logger.Fatal(
+				"topic_not_found",
+				logger.Str("topic", config.Topic),
+			)
+		}
+
+		logger.Info(
+			"metadata_received",
+			logger.Str("topic", config.Topic),
+			logger.Uint32("partition_count", partitionCount),
+		)
+
+		nextOffsets := make([]uint64, partitionCount)
+
+		err = consumerLoop(connection, config.Topic, nextOffsets)
 
 		_ = connection.Close()
 
@@ -92,14 +128,55 @@ func connect() net.Conn {
 	}
 }
 
-func consumerLoop(connection net.Conn, topic string, nextOffset *uint64) error {
+func fetchMetadata(connection net.Conn) ([]protocol.TopicMetadata, error) {
+	request := &protocol.Request{
+		Type:           protocol.RequestMetadata,
+		ClientInstance: logger.Instance(),
+		Metadata:       &protocol.MetadataRequest{},
+	}
+
+	data, err := protocol.EncodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := protocol.WriteFrame(connection, data); err != nil {
+		return nil, err
+	}
+
+	data, err = protocol.ReadFrame(connection)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := protocol.DecodeResponse(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Type != protocol.ResponseMetadata {
+		return nil, protocol.ErrUnexpectedResponse
+	}
+
+	if response.StatusCode != protocol.StatusOK {
+		return nil, fmt.Errorf("metadata request failed with status %s", response.StatusCode.String())
+	}
+
+	if response.Metadata == nil {
+		return nil, protocol.ErrInvalidMetadataResponse
+	}
+
+	return response.Metadata.Topics, nil
+}
+
+func consumerLoop(connection net.Conn, topic string, nextOffsets []uint64) error {
 	for {
 		request := &protocol.Request{
 			Type:           protocol.RequestFetch,
 			ClientInstance: logger.Instance(),
 			Fetch: &protocol.FetchRequest{
-				Topic:  topic,
-				Offset: *nextOffset,
+				Topic:   topic,
+				Offsets: nextOffsets,
 			},
 		}
 
@@ -134,18 +211,43 @@ func consumerLoop(connection net.Conn, topic string, nextOffset *uint64) error {
 
 		switch response.StatusCode {
 		case protocol.StatusOK:
+			if response.Fetch == nil {
+				logger.Fatal(
+					"invalid_fetch_response",
+					logger.Str("topic", topic),
+					logger.Str("status", response.StatusCode.String()),
+				)
+			}
+
+			if len(response.Fetch.Records) == 0 {
+				time.Sleep(retryTimeout)
+				continue
+			}
+
+			totalBytes := 0
+			for _, record := range response.Fetch.Records {
+				totalBytes += len(record.Record)
+			}
+
 			logger.Info(
-				"message_fetched",
+				"records_fetched",
 				logger.Str("topic", topic),
-				logger.Uint64("offset", *nextOffset),
-				logger.Int("size", len(response.Payload)),
+				logger.Uint32("record_count", uint32(len(response.Fetch.Records))),
+				logger.Int("bytes", totalBytes),
 			)
 
-			fmt.Printf("[%d] %s\n", *nextOffset, string(response.Payload))
-			(*nextOffset)++
+			for _, record := range response.Fetch.Records {
+				offset := nextOffsets[record.Partition]
 
-		case protocol.StatusOffsetNotFound:
-			time.Sleep(retryTimeout)
+				fmt.Printf(
+					"[P%d][%d] %s\n",
+					record.Partition,
+					offset,
+					string(record.Record),
+				)
+
+				nextOffsets[record.Partition]++
+			}
 
 		case protocol.StatusTopicNotFound:
 			logger.Fatal(

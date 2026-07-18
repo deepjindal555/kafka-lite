@@ -125,6 +125,7 @@ func (producer *Producer) onLingerTimeout(topic string) {
 		logger.Fatal(
 			"batch_send_failed",
 			logger.Str("topic", topic),
+			logger.Uint32("record_count", recordBatch.RecordCount),
 			logger.Err(err),
 		)
 	}
@@ -207,8 +208,9 @@ func (producer *Producer) sendBatch(topic string, recordBatch *batch.RecordBatch
 	if response.StatusCode != protocol.StatusOK {
 		logger.Error(
 			"batch_produce_failed",
-			logger.Str("status", response.StatusCode.String()),
 			logger.Str("topic", topic),
+			logger.Str("status", response.StatusCode.String()),
+			logger.Uint32("record_count", recordBatch.RecordCount),
 		)
 
 		if producer.config.PrintBatchAcks {
@@ -221,8 +223,11 @@ func (producer *Producer) sendBatch(topic string, recordBatch *batch.RecordBatch
 		return nil
 	}
 
-	offset := protocol.GetOffset(response.Payload)
+	if response.Produce == nil {
+		return protocol.ErrInvalidProduceResponse
+	}
 
+	offset := response.Produce.BaseOffset
 	batchSize, _ := batch.EncodedBatchSize(recordBatch)
 
 	logger.Info(
