@@ -12,16 +12,21 @@ import (
 )
 
 const (
-	address      = "localhost:9092"
-	retryTimeout = 100 * time.Millisecond
+	defaultAddress = "localhost:9092"
+	retryTimeout   = 100 * time.Millisecond
 )
 
 type ConsumerConfig struct {
-	Topic string
+	Address string
+	Topic   string
 }
 
 func main() {
-	config := ConsumerConfig{}
+	config := ConsumerConfig{
+		Address: defaultAddress,
+	}
+
+	flag.StringVar(&config.Address, "address", defaultAddress, "broker address")
 	flag.StringVar(&config.Topic, "topic", "", "topic")
 	flag.Parse()
 
@@ -36,8 +41,10 @@ func main() {
 	}
 	defer logger.Close()
 
+	var nextOffsets []uint64
+
 	for {
-		connection := connect()
+		connection := connect(config.Address)
 
 		metadata, err := fetchMetadata(connection)
 		if err != nil {
@@ -45,6 +52,7 @@ func main() {
 
 			logger.Warn(
 				"metadata_fetch_failed",
+				logger.Str("address", config.Address),
 				logger.Err(err),
 			)
 
@@ -74,7 +82,16 @@ func main() {
 			logger.Uint32("partition_count", partitionCount),
 		)
 
-		nextOffsets := make([]uint64, partitionCount)
+		if nextOffsets == nil {
+			nextOffsets = make([]uint64, partitionCount)
+		} else if uint32(len(nextOffsets)) != partitionCount {
+			logger.Fatal(
+				"partition_count_changed",
+				logger.Str("topic", config.Topic),
+				logger.Uint32("old", uint32(len(nextOffsets))),
+				logger.Uint32("new", partitionCount),
+			)
+		}
 
 		err = consumerLoop(connection, config.Topic, nextOffsets)
 
@@ -82,7 +99,7 @@ func main() {
 
 		logger.Warn(
 			"broker_disconnected",
-			logger.Str("address", address),
+			logger.Str("address", config.Address),
 			logger.Err(err),
 		)
 
@@ -90,7 +107,7 @@ func main() {
 	}
 }
 
-func connect() net.Conn {
+func connect(address string) net.Conn {
 	var reconnect bool
 
 	for {

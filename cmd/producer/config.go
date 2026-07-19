@@ -52,9 +52,10 @@ func parseProducerConfig(args []string) (*CLIConfig, error) {
 	)
 
 	config.Producer = ProducerConfig{
-		MaxBatchRecords: maxBatchRecords,
-		MaxBatchBytes:   maxBatchBytes,
-		Linger:          linger,
+		Address:         defaultAddress,
+		MaxBatchRecords: defaultMaxBatchRecords,
+		MaxBatchBytes:   defaultMaxBatchBytes,
+		Linger:          defaultLinger,
 		PrintBatchAcks:  true,
 	}
 
@@ -72,6 +73,7 @@ func parseProducerConfig(args []string) (*CLIConfig, error) {
 	flags := flag.NewFlagSet("producer", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
+	flags.StringVar(&config.Producer.Address, "address", defaultAddress, "broker address")
 	flags.BoolVar(&config.Automatic, "automatic", false, "generate records automatically")
 
 	flags.Uint64Var(&config.Workload.Messages, "messages", 0, "number of messages to produce in automatic mode")
@@ -83,9 +85,9 @@ func parseProducerConfig(args []string) (*CLIConfig, error) {
 	flags.IntVar(&config.Workload.MinMessageSize, "min-message-size", defaultMinMessageSize, "minimum payload size in bytes for random mode")
 	flags.IntVar(&config.Workload.MaxMessageSize, "max-message-size", defaultMaxMessageSize, "maximum payload size in bytes for random mode")
 
-	flags.UintVar(&maxBatchRecordsFlag, "max-batch-records", uint(maxBatchRecords), "maximum records per producer batch")
-	flags.UintVar(&maxBatchBytesFlag, "max-batch-bytes", uint(maxBatchBytes), "maximum producer batch size in bytes")
-	flags.DurationVar(&config.Producer.Linger, "linger", linger, "producer linger duration")
+	flags.UintVar(&maxBatchRecordsFlag, "max-batch-records", uint(defaultMaxBatchRecords), "maximum records per producer batch")
+	flags.UintVar(&maxBatchBytesFlag, "max-batch-bytes", uint(defaultMaxBatchBytes), "maximum producer batch size in bytes")
+	flags.DurationVar(&config.Producer.Linger, "linger", defaultLinger, "producer linger duration")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

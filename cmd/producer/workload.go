@@ -9,15 +9,16 @@ import (
 )
 
 type workloadGenerator struct {
-	config WorkloadConfig
-	random *rand.Rand
-
+	config       WorkloadConfig
+	topics       []string
+	random       *rand.Rand
 	nextSequence uint64
 }
 
-func newWorkloadGenerator(config WorkloadConfig) *workloadGenerator {
+func newWorkloadGenerator(config WorkloadConfig, topics []string) *workloadGenerator {
 	return &workloadGenerator{
 		config: config,
+		topics: topics,
 		random: rand.New(rand.NewSource(config.Seed)),
 	}
 }
@@ -53,16 +54,16 @@ func (generator *workloadGenerator) randomPayload(size int) []byte {
 	return payload
 }
 
-func (generator *workloadGenerator) nextTopic(topics []string) string {
-	if len(topics) == 0 {
+func (generator *workloadGenerator) nextTopic() string {
+	if len(generator.topics) == 0 {
 		panic("no topics configured")
 	}
 
-	return topics[generator.random.Intn(len(topics))]
+	return generator.topics[generator.random.Intn(len(generator.topics))]
 }
 
-func automaticProducerLoop(producer *Producer, config WorkloadConfig) error {
-	generator := newWorkloadGenerator(config)
+func automaticProducerLoop(producer *Producer, config WorkloadConfig, topics []string) error {
+	generator := newWorkloadGenerator(config, topics)
 	interval := rateInterval(config.Rate)
 
 	for i := uint64(0); i < config.Messages; i++ {
@@ -75,7 +76,7 @@ func automaticProducerLoop(producer *Producer, config WorkloadConfig) error {
 			Payload:   generator.NextPayload(),
 		}
 
-		if err := producer.Produce(generator.nextTopic(producer.config.Topics), record); err != nil {
+		if err := producer.Produce(generator.nextTopic(), record); err != nil {
 			return err
 		}
 	}

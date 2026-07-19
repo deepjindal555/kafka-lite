@@ -26,11 +26,11 @@ type Producer struct {
 	sendMu  sync.Mutex
 }
 
-func NewProducer(connection net.Conn, config ProducerConfig) *Producer {
-	topics := make(map[string]*topicState)
+func NewProducer(connection net.Conn, config ProducerConfig, topics []string) *Producer {
+	topicsMap := make(map[string]*topicState)
 
-	for _, topic := range config.Topics {
-		topics[topic] = &topicState{
+	for _, topic := range topics {
+		topicsMap[topic] = &topicState{
 			batcher: NewBatcher(
 				config.MaxBatchRecords,
 				config.MaxBatchBytes,
@@ -40,7 +40,7 @@ func NewProducer(connection net.Conn, config ProducerConfig) *Producer {
 
 	return &Producer{
 		connection: connection,
-		topics:     topics,
+		topics:     topicsMap,
 		config:     config,
 	}
 }

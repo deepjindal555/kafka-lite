@@ -1,0 +1,9 @@
+topics:
+  - name: orders
+    partitions: 3
+
+  - name: payments
+    partitions: 2
+
+  - name: logs
+    partitions: 1

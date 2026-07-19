@@ -18,24 +18,23 @@ import (
 )
 
 const (
-	address = "localhost:9092"
+	defaultAddress = "localhost:9092"
 
-	maxBatchRecords = 100
-	maxBatchBytes   = 64 << 10 // 64 KiB
-	linger          = 5 * time.Millisecond
+	defaultMaxBatchRecords = 100
+	defaultMaxBatchBytes   = 64 << 10 // 64 KiB
+	defaultLinger          = 10 * time.Millisecond
 
 	retryTimeout = 100 * time.Millisecond
 )
 
 type ProducerConfig struct {
+	Address string
+
 	MaxBatchRecords uint32
 	MaxBatchBytes   uint32
-
-	Linger time.Duration
+	Linger          time.Duration
 
 	PrintBatchAcks bool
-
-	Topics []string
 }
 
 var errProducerClosed = errors.New("producer closed")
@@ -68,7 +67,7 @@ func runManualProducer(config ProducerConfig) {
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		connection := connect()
+		connection := connect(config.Address)
 
 		metadata, err := fetchMetadata(connection)
 		if err != nil {
@@ -93,11 +92,11 @@ func runManualProducer(config ProducerConfig) {
 			logger.Int("topic_count", len(metadata)),
 		)
 
-		config.Topics = extractTopicNames(metadata)
+		topics := extractTopicNames(metadata)
 
-		producer := NewProducer(connection, config)
+		producer := NewProducer(connection, config, topics)
 
-		err = manualProducerLoop(producer, config.Topics, reader)
+		err = manualProducerLoop(producer, topics, reader)
 
 		if errors.Is(err, errProducerClosed) {
 			if err := producer.Close(); err != nil {
@@ -118,7 +117,7 @@ func runManualProducer(config ProducerConfig) {
 
 		logger.Warn(
 			"broker_disconnected",
-			logger.Str("address", address),
+			logger.Str("address", config.Address),
 			logger.Err(err),
 		)
 
@@ -127,7 +126,7 @@ func runManualProducer(config ProducerConfig) {
 }
 
 func runAutomaticProducer(config *CLIConfig) {
-	connection := connect()
+	connection := connect(config.Producer.Address)
 
 	metadata, err := fetchMetadata(connection)
 	if err != nil {
@@ -144,9 +143,9 @@ func runAutomaticProducer(config *CLIConfig) {
 		logger.Int("topic_count", len(metadata)),
 	)
 
-	config.Producer.Topics = extractTopicNames(metadata)
+	topics := extractTopicNames(metadata)
 
-	producer := NewProducer(connection, config.Producer)
+	producer := NewProducer(connection, config.Producer, topics)
 
 	logger.Info(
 		"automatic_workload_started",
@@ -155,7 +154,7 @@ func runAutomaticProducer(config *CLIConfig) {
 		logger.Uint64("rate", config.Workload.Rate),
 	)
 
-	if err := automaticProducerLoop(producer, config.Workload); err != nil {
+	if err := automaticProducerLoop(producer, config.Workload, topics); err != nil {
 		_ = connection.Close()
 		logger.Fatal(
 			"automatic_workload_failed",
@@ -177,7 +176,7 @@ func runAutomaticProducer(config *CLIConfig) {
 	)
 }
 
-func connect() net.Conn {
+func connect(address string) net.Conn {
 	var reconnect bool
 
 	for {
