@@ -12,22 +12,26 @@ import (
 )
 
 const (
-	defaultAddress = "localhost:9092"
-	retryTimeout   = 100 * time.Millisecond
+	defaultAddress      = "localhost:9092"
+	defaultLogDirectory = ""
+	retryTimeout        = 100 * time.Millisecond
 )
 
 type ConsumerConfig struct {
-	Address string
-	Topic   string
+	Address      string
+	Topic        string
+	LogDirectory string
 }
 
 func main() {
 	config := ConsumerConfig{
-		Address: defaultAddress,
+		Address:      defaultAddress,
+		LogDirectory: defaultLogDirectory,
 	}
 
 	flag.StringVar(&config.Address, "address", defaultAddress, "broker address")
 	flag.StringVar(&config.Topic, "topic", "", "topic")
+	flag.StringVar(&config.LogDirectory, "log-directory", defaultLogDirectory, "directory under logs/ where log files will be written")
 	flag.Parse()
 
 	if config.Topic == "" {
@@ -36,7 +40,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := logger.Init(fmt.Sprintf("consumer-%s", config.Topic), logger.LevelInfo); err != nil {
+	if err := logger.Init(fmt.Sprintf("consumer-%s", config.Topic), logger.LevelInfo, config.LogDirectory); err != nil {
 		panic(err)
 	}
 	defer logger.Close()

@@ -50,7 +50,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := logger.Init("producer", logger.LevelInfo); err != nil {
+	if err := logger.Init("producer", logger.LevelInfo, config.LogDirectory); err != nil {
 		panic(err)
 	}
 	defer logger.Close()

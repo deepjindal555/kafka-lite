@@ -10,33 +10,39 @@ import (
 )
 
 const (
-	defaultAddress        = ":9092"
-	defaultDataDirectory  = "data"
-	defaultMaxSegmentSize = 10 << 20 // 10 MiB
-
+	defaultAddress    = ":9092"
 	defaultTopicsFile = "topics.yaml"
+
+	defaultDataDirectory = "data"
+	defaultLogDirectory  = ""
+
+	defaultMaxSegmentSize = 10 << 20 // 10 MiB
 )
 
 type BrokerConfig struct {
-	Address        string
-	DataDirectory  string
-	MaxSegmentSize int64
-
+	Address    string
 	TopicsFile string
+
+	DataDirectory string
+	LogDirectory  string
+
+	MaxSegmentSize int64
 }
 
 func main() {
 	config := BrokerConfig{
 		Address:        defaultAddress,
-		DataDirectory:  defaultDataDirectory,
-		MaxSegmentSize: defaultMaxSegmentSize,
 		TopicsFile:     defaultTopicsFile,
+		DataDirectory:  defaultDataDirectory,
+		LogDirectory:   defaultLogDirectory,
+		MaxSegmentSize: defaultMaxSegmentSize,
 	}
 
 	flag.StringVar(&config.Address, "address", defaultAddress, "broker listen address")
-	flag.StringVar(&config.DataDirectory, "data-directory", defaultDataDirectory, "broker data directory")
-	flag.Int64Var(&config.MaxSegmentSize, "max-segment-size", defaultMaxSegmentSize, "maximum segment size in bytes")
 	flag.StringVar(&config.TopicsFile, "topics-file", defaultTopicsFile, "path to the broker topics configuration file")
+	flag.StringVar(&config.DataDirectory, "data-directory", defaultDataDirectory, "broker data directory")
+	flag.StringVar(&config.LogDirectory, "log-directory", defaultLogDirectory, "directory under logs/ where log files will be written")
+	flag.Int64Var(&config.MaxSegmentSize, "max-segment-size", defaultMaxSegmentSize, "maximum segment size in bytes")
 
 	flag.Parse()
 
@@ -56,7 +62,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := logger.Init("broker", logger.LevelInfo); err != nil {
+	if err := logger.Init("broker", logger.LevelInfo, config.LogDirectory); err != nil {
 		panic(err)
 	}
 	defer logger.Close()

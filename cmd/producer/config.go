@@ -26,6 +26,8 @@ const (
 type CLIConfig struct {
 	Automatic bool
 
+	LogDirectory string
+
 	Producer ProducerConfig
 	Workload WorkloadConfig
 }
@@ -75,6 +77,7 @@ func parseProducerConfig(args []string) (*CLIConfig, error) {
 
 	flags.StringVar(&config.Producer.Address, "address", defaultAddress, "broker address")
 	flags.BoolVar(&config.Automatic, "automatic", false, "generate records automatically")
+	flags.StringVar(&config.LogDirectory, "log-directory", "", "directory under logs/ where log files will be written")
 
 	flags.Uint64Var(&config.Workload.Messages, "messages", 0, "number of messages to produce in automatic mode")
 	flags.StringVar(&modeFlag, "mode", string(WorkloadSequential), "workload mode: sequential, fixed, or random")

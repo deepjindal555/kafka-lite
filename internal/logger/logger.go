@@ -3,7 +3,6 @@ package logger
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +63,7 @@ var (
 	initialized bool
 )
 
-func Init(name string, logLevel Level) error {
+func Init(name string, logLevel Level, logDirectory string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -72,22 +71,17 @@ func Init(name string, logLevel Level) error {
 		return nil
 	}
 
-	if err := os.MkdirAll("logs", 0755); err != nil {
+	logDirectory = filepath.Join("logs", logDirectory)
+	if err := os.MkdirAll(logDirectory, 0755); err != nil {
 		return err
 	}
 
 	component = name
 	level = logLevel
-
-	instance = fmt.Sprintf(
-		"%s-%s-%04d",
-		component,
-		time.Now().Format("20060102-150405"),
-		rand.Intn(10000),
-	)
+	instance = time.Now().Format("20060102-150405.000000000")
 
 	logFile, err := os.OpenFile(
-		filepath.Join("logs", instance+".jsonl"),
+		filepath.Join(logDirectory, fmt.Sprintf("%s-%s.jsonl", component, instance)),
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY,
 		0644,
 	)
